@@ -100,7 +100,7 @@ func TestLinuxSystem_TheInstalledLibrary_LoadsThroughTheVerifiedLoader_AndItsDep
 
 // --- The library's contract --------------------------------------------------------------------
 
-func linuxLibrary(t *testing.T) (kmsLibrary, string) {
+func linuxProvisionedLibrary(t *testing.T) (kmsLibrary, string) {
 	t.Helper()
 	installedLinuxLibraryPath(t)
 	w := provisionedWrapper(t)
@@ -138,7 +138,7 @@ func requireZero(t *testing.T, what string, b []byte) {
 func repeat(b byte, n int) []byte { return bytes.Repeat([]byte{b}, n) }
 
 func TestLinuxNative_AWrappedDEK_RoundTrips_AndFitsTheKeyFileLimit(t *testing.T) {
-	library, service := linuxLibrary(t)
+	library, service := linuxProvisionedLibrary(t)
 	dek := randomDEK(t)
 
 	wrapped := linuxWrap(t, library, service, dek)
@@ -156,7 +156,7 @@ func TestLinuxNative_AWrappedDEK_RoundTrips_AndFitsTheKeyFileLimit(t *testing.T)
 
 func TestLinuxNative_WrappingTheSameDEKTwice_GivesDifferentPayloads(t *testing.T) {
 	// A fresh salt per payload: equal DEKs must not be recognizable from their wrapped form.
-	library, service := linuxLibrary(t)
+	library, service := linuxProvisionedLibrary(t)
 	dek := randomDEK(t)
 
 	if bytes.Equal(linuxWrap(t, library, service, dek), linuxWrap(t, library, service, dek)) {
@@ -165,7 +165,7 @@ func TestLinuxNative_WrappingTheSameDEKTwice_GivesDifferentPayloads(t *testing.T
 }
 
 func TestLinuxNative_GeneratedDEKs_AreDistinct(t *testing.T) {
-	library, service := linuxLibrary(t)
+	library, service := linuxProvisionedLibrary(t)
 
 	seen := map[string]bool{}
 	for i := 0; i < 4; i++ {
@@ -184,7 +184,7 @@ func TestLinuxNative_GeneratedDEKs_AreDistinct(t *testing.T) {
 }
 
 func TestLinuxNative_UnwrappingUnderAnotherProvisionedService_IsAFingerprintMismatch_AndZeroesTheWholeBuffer(t *testing.T) {
-	library, service := linuxLibrary(t)
+	library, service := linuxProvisionedLibrary(t)
 	if os.Getenv(testOtherServiceVariable) == "" {
 		t.Skipf("set %s to a second provisioned service", testOtherServiceVariable)
 	}
@@ -198,7 +198,7 @@ func TestLinuxNative_UnwrappingUnderAnotherProvisionedService_IsAFingerprintMism
 }
 
 func TestLinuxNative_AServiceTheAllowlistDoesNotName_HasNoKEK(t *testing.T) {
-	library, _ := linuxLibrary(t)
+	library, _ := linuxProvisionedLibrary(t)
 	if !linuxPolicyRequiresPinnedNames() {
 		t.Skipf("%s does not set tpm.require_pinned_names = true (scripts/provision-linux-test-key.sh does)", linuxPolicyPath)
 	}
@@ -230,7 +230,7 @@ func TestLinuxNative_ChangingAnyByteOfThePayload_IsRefused_AndRevealsNothing(t *
 	// info, so no single-byte change may unwrap - to the original DEK or to any other. Each
 	// refusal can cost a TPM ECDH, so this changes the first and last eight bytes and every
 	// fifth byte between: a spread that lands in every field of the payload.
-	library, service := linuxLibrary(t)
+	library, service := linuxProvisionedLibrary(t)
 	wrapped := linuxWrap(t, library, service, randomDEK(t))
 
 	for i := range wrapped {
@@ -251,7 +251,7 @@ func TestLinuxNative_ChangingAnyByteOfThePayload_IsRefused_AndRevealsNothing(t *
 }
 
 func TestLinuxNative_ATruncatedOrExtendedPayload_IsRefused(t *testing.T) {
-	library, service := linuxLibrary(t)
+	library, service := linuxProvisionedLibrary(t)
 	wrapped := linuxWrap(t, library, service, randomDEK(t))
 	destination := make([]byte, DEKLength)
 
@@ -262,7 +262,7 @@ func TestLinuxNative_ATruncatedOrExtendedPayload_IsRefused(t *testing.T) {
 }
 
 func TestLinuxNative_AnEmptyPayload_IsRefused(t *testing.T) {
-	library, service := linuxLibrary(t)
+	library, service := linuxProvisionedLibrary(t)
 
 	status, _ := library.unwrapDEK(service, nil, make([]byte, DEKLength))
 
@@ -272,7 +272,7 @@ func TestLinuxNative_AnEmptyPayload_IsRefused(t *testing.T) {
 }
 
 func TestLinuxNative_ADEKOfTheWrongLength_IsAnInvalidArgument(t *testing.T) {
-	library, service := linuxLibrary(t)
+	library, service := linuxProvisionedLibrary(t)
 
 	for _, length := range []int{0, 16, DEKLength - 1, DEKLength + 1, 64} {
 		status, _ := library.wrapDEK(service, make([]byte, length), make([]byte, hkdfguard.MaxWrappedKeyBytes))
@@ -283,7 +283,7 @@ func TestLinuxNative_ADEKOfTheWrongLength_IsAnInvalidArgument(t *testing.T) {
 func TestLinuxNative_TheLibrary_ChecksServiceNamesItself(t *testing.T) {
 	// The KeyWrapper's validation normally stops these before the boundary; the library must
 	// refuse them on its own too, for every operation.
-	library, _ := linuxLibrary(t)
+	library, _ := linuxProvisionedLibrary(t)
 
 	for _, service := range []string{"", ".leading.dot", "double..dot", "has space", "slash/inside", "dash-inside", "café", strings.Repeat("a", 129)} {
 		if hkdfguard.IsValidServiceName(service) {
@@ -300,7 +300,7 @@ func TestLinuxNative_TheLibrary_ChecksServiceNamesItself(t *testing.T) {
 
 func TestLinuxNative_AServiceNameOfTheMaximumLength_IsAccepted(t *testing.T) {
 	// 128 characters is valid; with the allowlist it simply has no KEK, without one it may.
-	library, _ := linuxLibrary(t)
+	library, _ := linuxProvisionedLibrary(t)
 
 	status, _ := library.wrapDEK(strings.Repeat("a", hkdfguard.MaxServiceNameLength), make([]byte, DEKLength), make([]byte, hkdfguard.MaxWrappedKeyBytes))
 
@@ -312,7 +312,7 @@ func TestLinuxNative_AServiceNameOfTheMaximumLength_IsAccepted(t *testing.T) {
 func TestLinuxNative_ATooSmallBuffer_ReportsACapacityThatSuffices(t *testing.T) {
 	// The reported capacity is an upper bound for any payload, not the exact size of this one;
 	// it must fit a key file and be enough.
-	library, service := linuxLibrary(t)
+	library, service := linuxProvisionedLibrary(t)
 	dek := randomDEK(t)
 
 	status, required := library.wrapDEK(service, dek, make([]byte, 1))
@@ -345,7 +345,7 @@ func TestLinuxNative_ATooSmallBuffer_ReportsACapacityThatSuffices(t *testing.T) 
 }
 
 func TestLinuxNative_ConcurrentCallers_EachGetTheirOwnDEKBack(t *testing.T) {
-	library, service := linuxLibrary(t)
+	library, service := linuxProvisionedLibrary(t)
 
 	var wg sync.WaitGroup
 	for i := 0; i < 8; i++ {
@@ -394,7 +394,7 @@ func requireCLI(t *testing.T) {
 func TestLinuxNative_AKeyFileWrappedByTheProvisioningTool_RevealsItsDEKThroughTheWrapper(t *testing.T) {
 	// The deployment path: hkdfguard-v1-initialize wraps a delivered DEK on the host, in its own
 	// process, and the application unwraps the key file through this binding.
-	_, service := linuxLibrary(t)
+	_, service := linuxProvisionedLibrary(t)
 	requireCLI(t)
 
 	directory := t.TempDir()
@@ -433,7 +433,7 @@ func TestLinuxNative_AKeyFileWrappedByTheProvisioningTool_RevealsItsDEKThroughTh
 }
 
 func TestLinuxNative_TheProvisioningTool_ReportsTheTestServiceAsProvisioned(t *testing.T) {
-	_, service := linuxLibrary(t)
+	_, service := linuxProvisionedLibrary(t)
 	requireCLI(t)
 
 	if exitCode, output := linuxRunCLI(t, "provision", "--service-name", service); exitCode != 0 {
