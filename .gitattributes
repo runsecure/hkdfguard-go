@@ -1,0 +1,7 @@
+# gofmt requires LF line endings; keep them on Windows checkouts too.
+*.go text eol=lf
+go.mod text eol=lf
+go.sum text eol=lf
+# Scripts are read as text by tests (regexes anchored with $) and run on Unix; CRLF breaks both.
+*.sh text eol=lf
+*.ps1 text eol=lf
