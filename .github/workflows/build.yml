@@ -1,0 +1,53 @@
+# Reusable check workflow, called by ci.yml (every push and pull request) and release.yml (version
+# tags), so a release is checked exactly as CI checks every commit - there is one definition of
+# "the build", not two.
+#
+# Runs scripts/check.sh - the same script a developer runs - on each supported OS: formatting,
+# tidy module files, vet, build, every module's tests under the race detector, govulncheck, and a
+# type-check of the native key-wrapper module for every platform. The native round trips are
+# reported as skipped on GitHub's runners, which have no HkdfGuard native library installed; a
+# self-hosted runner with a provisioned test service runs them too.
+#
+# Holds no secrets and needs no write permission.
+name: Build
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+# Third-party actions are pinned to full commit SHAs; see release.yml.
+
+jobs:
+  check:
+    name: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15, windows-2022]
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false # nothing later in this job pushes
+
+      # The toolchain directive in go.mod names the Go version; every module's go.sum keys the
+      # module cache.
+      - name: Set up Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: go.mod
+          check-latest: false
+          cache-dependency-path: |
+            go.sum
+            cryptoprovider/aesgcm256/go.sum
+            keywrapping/nativev1/go.sum
+            integration/go.sum
+
+      - name: Check every module
+        shell: bash
+        run: scripts/check.sh

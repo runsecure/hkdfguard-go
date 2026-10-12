@@ -49,7 +49,7 @@ func winLoad(path, expectedPublisher string) (kmsLibrary, error) {
 		return nil, untrustedCause(err, "'%s' passed verification but could not be loaded", path)
 	}
 
-	library := &winLibrary{}
+	library := &winLibrary{handle: handle}
 	for _, export := range []struct {
 		name   string
 		target *uintptr
@@ -88,12 +88,8 @@ func winVerifyLocation(path string) error {
 			return winVerifyTrustedOnly(security, item, winGuardedRootRights, winDescribeSID)
 		}
 
-		attributes, err := windows.GetFileAttributes(windows.StringToUTF16Ptr(item))
-		if err != nil {
-			return untrustedCause(err, "Could not read the attributes of '%s'", item)
-		}
-		if attributes&windows.FILE_ATTRIBUTE_REPARSE_POINT != 0 {
-			return untrusted("'%s' is a symbolic link or junction; the HkdfGuard native library is only loaded through a real path.", item)
+		if err := winVerifyNotReparsePoint(item); err != nil {
+			return err
 		}
 		if err := winVerifyTrustedOnly(security, item, winGuardedRights, winDescribeSID); err != nil {
 			return err
@@ -101,6 +97,19 @@ func winVerifyLocation(path string) error {
 
 		item = parent
 	}
+}
+
+// winVerifyNotReparsePoint refuses a file or folder that is a symbolic link or junction, either of
+// which could redirect a trusted-looking path somewhere writable.
+func winVerifyNotReparsePoint(item string) error {
+	attributes, err := windows.GetFileAttributes(windows.StringToUTF16Ptr(item))
+	if err != nil {
+		return untrustedCause(err, "Could not read the attributes of '%s'", item)
+	}
+	if attributes&windows.FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+		return untrusted("'%s' is a symbolic link or junction; the HkdfGuard native library is only loaded through a real path.", item)
+	}
+	return nil
 }
 
 // winReadSecurity reads an item's owner and DACL into the plain form the policy checks.
@@ -324,8 +333,9 @@ func winVerifyImageKindOf(path string) error {
 	return winVerifyImageKind(path, file.FileHeader.Characteristics, file.FileHeader.Machine, runtime.GOARCH)
 }
 
-// winLibrary is the loaded HkdfGuardV1.dll's exports.
+// winLibrary is the loaded HkdfGuardV1.dll and its exports.
 type winLibrary struct {
+	handle                        windows.Handle
 	wrap, unwrap, generateAndWrap uintptr
 }
 

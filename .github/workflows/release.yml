@@ -1,0 +1,149 @@
+# Checks and publishes one module as a versioned GitHub Release.
+#
+# A Go module is released by its tag alone: the Go module proxy serves the tagged source, so there
+# is nothing to pack, sign or push to a feed. This workflow makes sure a tag only ever lands on a
+# commit that passes every check, and publishes the module's source archive, its SHA-256 and a
+# build-provenance attestation as the release's assets. Three jobs:
+#
+#   version  turns the tag into the module it releases (scripts/release-tag.sh); fails on a
+#            malformed tag, or on a nested module whose go.mod still carries a replace directive
+#            or a placeholder version of the root module.
+#   build    build.yml, the same reusable workflow ci.yml runs, on every supported OS.
+#   publish  archives the module's source from the tagged commit, attests its provenance, and
+#            creates the GitHub Release.
+#
+# Triggered by pushing a version tag:
+#
+#   git tag v0.1.0 && git push origin v0.1.0                              the root module
+#   git tag cryptoprovider/aesgcm256/v0.1.0 && git push origin cryptoprovider/aesgcm256/v0.1.0
+#   git tag keywrapping/nativev1/v0.1.0 && git push origin keywrapping/nativev1/v0.1.0
+#
+# Any v0.x.y tag, and any tag with a pre-release suffix (v1.2.0-rc.1), is published as a GitHub
+# pre-release.
+#
+# Unlike the .NET port, no Azure sign-in and no "release" environment are needed: there are no
+# binaries to Authenticode-sign.
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+      - "cryptoprovider/aesgcm256/v*.*.*"
+      - "keywrapping/nativev1/v*.*.*"
+
+# Least privilege by default; each job asks for exactly what it needs below.
+permissions:
+  contents: read
+
+# Third-party actions are pinned to full commit SHAs, not tags: a tag can be moved to different
+# code after the fact, a commit SHA cannot. The trailing comment names the release each SHA
+# corresponds to. To update one, look up the new tag's commit
+# (git ls-remote https://github.com/<action> refs/tags/<tag>; for an annotated tag use the ^{}
+# line) and replace both.
+
+concurrency:
+  group: release-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  version:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    outputs:
+      module_dir: ${{ steps.version.outputs.module_dir }}
+      module_path: ${{ steps.version.outputs.module_path }}
+      artifact: ${{ steps.version.outputs.artifact }}
+      version: ${{ steps.version.outputs.version }}
+      prerelease: ${{ steps.version.outputs.prerelease }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: go.mod
+          check-latest: false
+          cache: false
+
+      - name: Determine the released module and version
+        id: version
+        shell: bash
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          scripts/release-tag.sh "$TAG" | tee -a "$GITHUB_OUTPUT"
+
+  # Every check, on every OS - the same workflow ci.yml runs on every push.
+  build:
+    needs: version
+    uses: ./.github/workflows/build.yml
+    permissions:
+      contents: read
+
+  publish:
+    needs: [version, build]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write     # create the GitHub Release
+      id-token: write     # build provenance attestation (signing)
+      attestations: write # build provenance attestation (storage)
+    env:
+      MODULE_DIR: ${{ needs.version.outputs.module_dir }}
+      MODULE_PATH: ${{ needs.version.outputs.module_path }}
+      ARTIFACT: ${{ needs.version.outputs.artifact }}
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      # Exactly the files the module proxy will serve for this tag: the module directory at the
+      # tagged commit, from git, never from the working tree.
+      - name: Archive the module's source
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts
+          name="$ARTIFACT-$VERSION"
+          if [[ "$MODULE_DIR" == "." ]]; then
+            git archive --format=zip --prefix="$name/" --output="artifacts/$name.zip" HEAD
+          else
+            git archive --format=zip --prefix="$name/" --output="artifacts/$name.zip" HEAD "$MODULE_DIR"
+          fi
+          (cd artifacts && sha256sum "$name.zip" > "$name.zip.sha256")
+          echo "$MODULE_PATH $VERSION"
+          ls -l artifacts
+
+      # Signed, verifiable statement that this exact archive (by SHA-256) was produced by this
+      # workflow, from this commit, in this repository. Verify one with:
+      #   gh attestation verify <file> --repo runsecure/hkdfguard-go
+      # Attestations need a public repository, or GitHub Enterprise Cloud for a private one.
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
+        with:
+          subject-path: artifacts/*.zip
+
+      - name: Create GitHub Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          PRERELEASE: ${{ needs.version.outputs.prerelease }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          extra=()
+          if [[ "$PRERELEASE" == "true" ]]; then
+            extra+=(--prerelease)
+            echo "Publishing as a pre-release"
+          fi
+          gh release create "$TAG" artifacts/* \
+            --title "$MODULE_PATH $VERSION" \
+            --notes "Go module \`$MODULE_PATH\` at \`$VERSION\`: \`go get $MODULE_PATH@$VERSION\`. The attached archive is the module's source at this tag, with its SHA-256 and a build-provenance attestation (\`gh attestation verify <file> --repo $REPOSITORY\`)." \
+            --generate-notes "${extra[@]}" --repo "$REPOSITORY"
