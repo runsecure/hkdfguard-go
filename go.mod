@@ -2,6 +2,8 @@ module github.com/runsecure/hkdfguard-go
 
 go 1.25.0
 
+toolchain go1.27.2
+
 require (
 	go.opentelemetry.io/otel v1.46.0
 	go.opentelemetry.io/otel/metric v1.46.0

@@ -92,8 +92,9 @@ func (w *KeyWrapper) Wrap(ctx context.Context, plaintext, result []byte) (int, e
 }
 
 // Unwrap reveals the DEK in wrapped, which must have been wrapped under this same service, writing
-// it into result and returning its length (always DEKLength). On any failure result is zeroed, so
-// nothing the native call may have left there survives.
+// it into result and returning its length, which is always DEKLength: a success revealing any
+// other count is refused rather than handed on as a short or padded key. On any failure result is
+// zeroed, so nothing the native call may have left there survives.
 func (w *KeyWrapper) Unwrap(ctx context.Context, wrapped, result []byte) (int, error) {
 	if err := checkCall(ctx, wrapped, result); err != nil {
 		return 0, err
@@ -101,10 +102,14 @@ func (w *KeyWrapper) Unwrap(ctx context.Context, wrapped, result []byte) (int, e
 
 	status, written := w.library.unwrapDEK(w.service, wrapped, result)
 	n, err := w.complete("unwrap", status, written, result)
+	if err == nil && n != DEKLength {
+		err = fmt.Errorf("nativev1: native KMS unwrap for service '%s' revealed %d bytes; a DEK is always %d", w.service, n, DEKLength)
+	}
 	if err != nil {
 		hkdfguard.Wipe(result)
+		return 0, err
 	}
-	return n, err
+	return n, nil
 }
 
 // GenerateAndWrap generates a fresh DEK inside the native library and wraps it under this

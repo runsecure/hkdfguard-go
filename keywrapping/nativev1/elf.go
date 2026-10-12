@@ -70,8 +70,14 @@ func elfReadNeeded(path string, read func(offset int64, count int) ([]byte, bool
 	if programHeaderSize < elfProgramHeaderSize || programHeaderCount == 0 || programHeaderCount > elfMaxProgramHeaders {
 		return nil, elfMalformed(path, "its program header table is malformed")
 	}
+	// Both fields are 16-bit, so their product can reach 256 MB; bound the table like every other
+	// region read, before anything is allocated for it.
+	programHeaderBytes, err := elfSize(path, uint64(programHeaderSize)*uint64(programHeaderCount), "program header table")
+	if err != nil {
+		return nil, err
+	}
 
-	programHeaders, err := elfRead(path, read, programHeaderOffset, programHeaderSize*programHeaderCount, "program headers")
+	programHeaders, err := elfRead(path, read, programHeaderOffset, programHeaderBytes, "program headers")
 	if err != nil {
 		return nil, err
 	}

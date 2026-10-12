@@ -133,6 +133,9 @@ func TestELF_AMalformedImage_IsRefused(t *testing.T) {
 	le.PutUint64(hugeOffset[32:], ^uint64(0))
 	hugeDynamic := base()
 	le.PutUint64(hugeDynamic[64+56+32:], 2<<20)
+	hugeProgramHeaderTable := base() // 65535-byte entries x 4096 entries: 256 MB before any read
+	le.PutUint16(hugeProgramHeaderTable[54:], 0xFFFF)
+	le.PutUint16(hugeProgramHeaderTable[56:], elfMaxProgramHeaders)
 
 	cases := []struct {
 		reason string
@@ -144,6 +147,7 @@ func TestELF_AMalformedImage_IsRefused(t *testing.T) {
 		{"program header table is malformed", noProgramHeaders},
 		{"out of range", hugeOffset},
 		{"implausibly large", hugeDynamic},
+		{"implausibly large", hugeProgramHeaderTable},
 		{"runs past the end", base()[:40]},
 		{"runs past the end", base()[:len(base())-3]},
 		{"no string table", syntheticELF([]string{"x.so"}, elfOptions{withoutStringTable: true})},

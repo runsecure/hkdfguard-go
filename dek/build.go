@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"runtime"
 	"slices"
 	"time"
 
@@ -35,13 +36,16 @@ const (
 	MaxKeyRefreshInterval = 300 * time.Second
 )
 
+// keyFileForbiddenPerm is the group- and other-write bits a key file must not have.
+const keyFileForbiddenPerm = 0o022
+
 var (
 	// ErrInvalidConfig reports a Config that is missing something Build needs, or has a value out
 	// of range.
 	ErrInvalidConfig = errors.New("dek: invalid key ring configuration")
 
-	// ErrInvalidKeyFile reports a key file that is empty or larger than
-	// hkdfguard.MaxWrappedKeyBytes.
+	// ErrInvalidKeyFile reports a key file that is not a regular file, is writable by its group
+	// or by others, or is empty or larger than hkdfguard.MaxWrappedKeyBytes.
 	ErrInvalidKeyFile = errors.New("dek: invalid key file")
 )
 
@@ -73,7 +77,9 @@ type Config struct {
 	// factory a logger - each failed refresh is then the only sign the KEK is gone.
 	RefreshFailurePolicy hkdfguard.RefreshFailurePolicy
 
-	// KeyFiles maps a version to the path of its wrapped DEK file.
+	// KeyFiles maps a version to the path of its wrapped DEK file. Each must be a regular file
+	// that only its owner can write (on Unix, no group or other write bit): a principal who could
+	// rewrite it, and reach the KEK, could substitute a DEK they know.
 	KeyFiles map[int]string
 
 	// EphemeralKeys are versions whose DEK is generated at Build time and never written to disk.
@@ -220,15 +226,29 @@ func addOwned(ctx context.Context, ring *KeyRing, version int, provider hkdfguar
 	return nil
 }
 
-// readKeyFile reads a wrapped DEK, refusing an empty file or one over
-// hkdfguard.MaxWrappedKeyBytes. It never reads more than one byte past the limit, so a wrong path
-// (a log, a device) can't make startup allocate an unbounded buffer.
+// readKeyFile reads a wrapped DEK, refusing anything but a regular file only its owner can
+// write, an empty file, or one over hkdfguard.MaxWrappedKeyBytes. It never reads more than one
+// byte past the limit, so a wrong path (a log, a device) can't make startup allocate an unbounded
+// buffer. The checks are made on the opened file, so they describe what is read, not a path that
+// may have changed in between.
 func readKeyFile(path string) ([]byte, error) {
 	file, err := os.Open(path)
 	if err != nil {
 		return nil, err
 	}
 	defer file.Close()
+
+	info, err := file.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("%w: key file '%s' is not a regular file", ErrInvalidKeyFile, path)
+	}
+	// Windows reports no meaningful Unix permission bits; its ACLs are the file owner's to set.
+	if runtime.GOOS != "windows" && info.Mode().Perm()&keyFileForbiddenPerm != 0 {
+		return nil, fmt.Errorf("%w: key file '%s' is writable by its group or by others (mode %04o); only its owner may write it", ErrInvalidKeyFile, path, info.Mode().Perm())
+	}
 
 	buffer := make([]byte, hkdfguard.MaxWrappedKeyBytes+1)
 	n, err := io.ReadFull(file, buffer)

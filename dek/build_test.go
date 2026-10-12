@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
@@ -156,6 +157,38 @@ func TestBuild_WhenCancelled_CreatesNothing(t *testing.T) {
 	}
 	if len(f.providers()) != 0 {
 		t.Error("a cancelled Build created providers")
+	}
+}
+
+func TestKeyFiles_WritableByGroupOrOthers_AreRefused(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix permission bits are not meaningful on Windows")
+	}
+	contents := []byte{1, 2, 3}
+
+	for _, mode := range []os.FileMode{0o400, 0o600, 0o640, 0o644} {
+		path := writeKeyFile(t, contents)
+		if err := os.Chmod(path, mode); err != nil {
+			t.Fatal(err)
+		}
+		if read, err := readKeyFile(path); err != nil || !bytes.Equal(read, contents) {
+			t.Errorf("mode %04o: read %v, %v; want the contents", mode, read, err)
+		}
+	}
+	for _, mode := range []os.FileMode{0o620, 0o660, 0o602, 0o666} {
+		path := writeKeyFile(t, contents)
+		if err := os.Chmod(path, mode); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := readKeyFile(path); !errors.Is(err, ErrInvalidKeyFile) {
+			t.Errorf("mode %04o: %v; want ErrInvalidKeyFile", mode, err)
+		}
+	}
+}
+
+func TestKeyFiles_ThatAreNotRegularFiles_AreRefused(t *testing.T) {
+	if _, err := readKeyFile(t.TempDir()); !errors.Is(err, ErrInvalidKeyFile) {
+		t.Errorf("a directory: %v; want ErrInvalidKeyFile", err)
 	}
 }
 

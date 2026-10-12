@@ -122,21 +122,39 @@ func TestWrap_DelegatesToTheLibrary(t *testing.T) {
 }
 
 func TestUnwrap_DelegatesToTheLibrary(t *testing.T) {
-	library := &fakeLibrary{unwrapPayload: []byte{1, 2, 3, 4, 5}}
+	dek := bytes.Repeat([]byte{0xD1}, DEKLength)
+	library := &fakeLibrary{unwrapPayload: dek}
 	w := mustWrapper(t, "service.a", library)
 	wrapped := []byte{10, 20, 30, 40}
-	result := make([]byte, 16)
+	result := make([]byte, DEKLength+8)
 
 	n, err := w.Unwrap(context.Background(), wrapped, result)
 
-	if err != nil || n != 5 {
-		t.Fatalf("Unwrap = %d, %v; want 5, nil", n, err)
+	if err != nil || n != DEKLength {
+		t.Fatalf("Unwrap = %d, %v; want %d, nil", n, err, DEKLength)
 	}
 	if library.unwrapCalls != 1 || library.lastService != "service.a" || !bytes.Equal(library.lastUnwrapIn, wrapped) {
 		t.Errorf("library saw %d calls, service %q, input %v", library.unwrapCalls, library.lastService, library.lastUnwrapIn)
 	}
-	if !bytes.Equal(result[:5], []byte{1, 2, 3, 4, 5}) {
-		t.Errorf("result = %v", result[:5])
+	if !bytes.Equal(result[:DEKLength], dek) || !hkdfguard.IsZero(result[DEKLength:]) {
+		t.Errorf("result = %v", result)
+	}
+}
+
+func TestUnwrap_RevealingAnythingButADEKLengthKey_IsRefusedAndZeroed(t *testing.T) {
+	for _, length := range []int{1, DEKLength - 1, DEKLength + 1} {
+		library := &fakeLibrary{unwrapPayload: bytes.Repeat([]byte{0xD1}, length)}
+		w := mustWrapper(t, "service.a", library)
+		result := bytes.Repeat([]byte{0xAB}, DEKLength+8)
+
+		n, err := w.Unwrap(context.Background(), []byte{10, 20, 30}, result)
+
+		if err == nil || n != 0 {
+			t.Errorf("%d bytes revealed: Unwrap = %d, %v; want 0 and an error", length, n, err)
+		}
+		if !hkdfguard.IsZero(result) {
+			t.Errorf("%d bytes revealed: result = %v, want zeroed", length, result)
+		}
 	}
 }
 
