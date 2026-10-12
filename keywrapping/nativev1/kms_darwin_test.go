@@ -3,7 +3,10 @@
 package nativev1
 
 import (
+	"bytes"
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 )
@@ -70,5 +73,75 @@ func TestDarwin_ProbeDistinguishesMissingFromPresent(t *testing.T) {
 	}
 	if errno := darwinProbe("/definitely/not/here"); errno != errnoENOENT {
 		t.Errorf("probe(missing) = %d, want ENOENT", errno)
+	}
+}
+
+// --- The test service --------------------------------------------------------------------------
+
+// platformTestEnvironment asks the installed hkdfguard-v1-initialize, which sits beside the loaded
+// library, whether the default test service is provisioned. The tool created the KEK, so it is on
+// the keychain item's access list and never prompts; asking the library from this process would.
+func platformTestEnvironment(defaultService string) testEnvironment {
+	tool, err := darwinProvisioningTool()
+	if err != nil {
+		return testEnvironment{service: defaultService} // run the tests, so the failure is reported
+	}
+	output, err := exec.Command(tool, "status", "--service-name", defaultService).CombinedOutput()
+	if err != nil {
+		return testEnvironment{service: defaultService}
+	}
+
+	switch {
+	case bytes.Contains(output, []byte("kek: present")):
+		return testEnvironment{service: defaultService}
+	case bytes.Contains(output, []byte("kek: absent")):
+		return testEnvironment{skipReason: fmt.Sprintf("The test KEK '%s' is not provisioned. Run scripts/provision-macos-test-key.sh, or set %s to a provisioned service.", defaultService, testServiceVariable)}
+	default:
+		return testEnvironment{service: defaultService}
+	}
+}
+
+// darwinProvisioningTool is the hkdfguard-v1-initialize installed beside the library the loader
+// would choose.
+func darwinProvisioningTool() (string, error) {
+	home, _ := os.UserHomeDir()
+	path, _, err := macChoosePath(darwinProbe, home)
+	if err != nil {
+		return "", err
+	}
+	tool := filepath.Join(filepath.Dir(path), "hkdfguard-v1-initialize")
+	if _, err := os.Stat(tool); err != nil {
+		return "", err
+	}
+	return tool, nil
+}
+
+func TestDarwin_TheProvisioningTool_ReportsAnUnprovisionedService_AsAbsent(t *testing.T) {
+	tool, err := darwinProvisioningTool()
+	if err != nil {
+		t.Skipf("the provisioning tool is not installed: %v", err)
+	}
+
+	output, err := exec.Command(tool, "status", "--service-name", unprovisionedServiceName).CombinedOutput()
+
+	if err != nil || !bytes.Contains(output, []byte("kek: absent")) {
+		t.Errorf("status = %v: %s", err, output)
+	}
+}
+
+func TestDarwin_TheDefaultTestService_IsFoundOnlyWhenProvisioned(t *testing.T) {
+	tool, err := darwinProvisioningTool()
+	if err != nil {
+		t.Skipf("the provisioning tool is not installed: %v", err)
+	}
+	output, err := exec.Command(tool, "status", "--service-name", defaultTestServices["darwin"]).CombinedOutput()
+	if err != nil {
+		t.Fatalf("status: %v: %s", err, output)
+	}
+
+	env := platformTestEnvironment(defaultTestServices["darwin"])
+
+	if provisioned := bytes.Contains(output, []byte("kek: present")); (env.service != "") != provisioned {
+		t.Errorf("environment = %+v, but the tool reports provisioned = %v", env, provisioned)
 	}
 }
