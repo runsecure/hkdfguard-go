@@ -23,8 +23,8 @@
 # Then run the native tests from the keywrapping/nativev1 module (cgo is required on Linux, so a C
 # compiler must be installed):
 #
-#   HKDFGUARD_TEST_SERVICE=com.hkdfguard.native.linux.test \
-#   HKDFGUARD_TEST_SERVICE_OTHER=com.hkdfguard.native.linux.test.other \
+#   HKDFGUARD_TEST_SERVICE=com.hkdfguard.integration.test.221 \
+#   HKDFGUARD_TEST_SERVICE_OTHER=com.hkdfguard.integration.test.221.other \
 #   CGO_ENABLED=1 go test ./...
 #
 # The policy it writes is the same one hkdfguard-dotnet's copy of this script writes, and each
@@ -39,7 +39,7 @@
 
 set -euo pipefail
 
-readonly SERVICE="com.hkdfguard.native.linux.test"
+readonly SERVICE="com.hkdfguard.integration.test.221"
 readonly OTHER_SERVICE="${SERVICE}.other"
 readonly TOOL="/usr/bin/hkdfguard"
 readonly TPM_DEVICE="/dev/tpmrm0"

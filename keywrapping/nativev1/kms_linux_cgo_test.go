@@ -27,8 +27,8 @@ import (
 // against the real KEK provider - on a TPM host, provisioned by scripts/provision-linux-test-key.sh:
 //
 //	sudo scripts/provision-linux-test-key.sh
-//	HKDFGUARD_TEST_SERVICE=com.hkdfguard.native.linux.test \
-//	HKDFGUARD_TEST_SERVICE_OTHER=com.hkdfguard.native.linux.test.other \
+//	HKDFGUARD_TEST_SERVICE=com.hkdfguard.integration.test.221 \
+//	HKDFGUARD_TEST_SERVICE_OTHER=com.hkdfguard.integration.test.221.other \
 //	CGO_ENABLED=1 go test ./...
 //
 // native_test.go covers what every platform shares; these pin down the exact Linux status codes,

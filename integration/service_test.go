@@ -39,9 +39,9 @@ const (
 )
 
 var defaultTestServices = map[string]string{
-	"windows": "com.hkdfguard.native.windows.test",
-	"darwin":  "com.hkdfguard.native.macos.test",
-	"linux":   "com.hkdfguard.native.linux.test",
+	"windows": "com.hkdfguard.integration.test.221",
+	"darwin":  "com.hkdfguard.integration.test.221",
+	"linux":   "com.hkdfguard.integration.test.221",
 }
 
 type testEnvironment struct {

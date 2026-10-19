@@ -17,7 +17,7 @@
     named in HKDFGUARD_TEST_SERVICE; without it they are reported as skipped. No C compiler is
     needed on Windows.
 
-        $env:HKDFGUARD_TEST_SERVICE = 'com.hkdfguard.native.windows.test'
+        $env:HKDFGUARD_TEST_SERVICE = 'com.hkdfguard.integration.test.221'
         go test ./...
 
     The KEK is the same one hkdfguard-dotnet's copy of this script provisions, so one machine
@@ -33,7 +33,7 @@
 [CmdletBinding()]
 param(
     [ValidatePattern('^(?!\.)(?!.*\.\.)[A-Za-z0-9.]{1,128}$')]
-    [string] $ServiceName = 'com.hkdfguard.native.windows.test'
+    [string] $ServiceName = 'com.hkdfguard.integration.test.221'
 )
 
 $ErrorActionPreference = 'Stop'
