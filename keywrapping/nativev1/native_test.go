@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"runtime"
 	"sync"
 	"testing"
@@ -21,7 +22,7 @@ import (
 // Platform Crypto Provider / TPM, Linux TPM2, macOS Secure Enclave). No native library creates a
 // KEK during wrap/unwrap, so the round trips run against an operator-provisioned service:
 //
-//	hkdfguard-v1-initialize provision --service-name hkdfguard.integrationtest   (elevated on Windows)
+//	hkdfguard provision --service-name hkdfguard.integrationtest   (elevated on Windows; hkdfguard-v1-initialize on macOS)
 //	HKDFGUARD_TEST_SERVICE=hkdfguard.integrationtest go test ./...
 //
 // Each platform's script under scripts/ provisions a default test service after checking the
@@ -37,7 +38,7 @@ import (
 // macOS: in the library's legacy keychain mode the KEK's access list names the binary that created
 // it (the provisioning tool), so the first call from any other binary - every freshly built test
 // binary - is answered with a keychain dialog in a logged-in session (click "Always Allow"), or
-// with keychainAccessDenied (-17) in a session without one. awaitNativeAccess turns a dialog
+// with KEK_ACCESS_DENIED (-18) in a session without one. awaitNativeAccess turns a dialog
 // nobody answers into a failure that says so, rather than a hang.
 
 // nativeCallTimeout bounds the first native call under the test service.
@@ -138,7 +139,7 @@ func awaitNativeAccess(t *testing.T, w *KeyWrapper) {
 			nativeAccessErr = fmt.Errorf("the first native call under service '%s' has not returned after %v. "+
 				"On macOS the KEK's keychain item is asking for access in a dialog: click \"Always Allow\" "+
 				"(every freshly built test binary asks once). In a session with no UI the library reports "+
-				"keychainAccessDenied (-17) instead; run the tests from a logged-in session", w.service, nativeCallTimeout)
+				"KEK_ACCESS_DENIED (-18) instead; run the tests from a logged-in session", w.service, nativeCallTimeout)
 		}
 	})
 	if nativeAccessErr != nil {
@@ -167,6 +168,23 @@ func TestTheInstalledLibrary_LoadsOnce_AndAnswersCalls(t *testing.T) {
 	status, _ := first.wrapDEK(unprovisionedServiceName, make([]byte, DEKLength), make([]byte, hkdfguard.MaxWrappedKeyBytes))
 	if status >= 0 {
 		t.Errorf("wrap under an unprovisioned service returned status %d", status)
+	}
+}
+
+func TestTheInstalledLibrary_AnswersOpenFile_WithADescribedRefusal(t *testing.T) {
+	// hkdfguard_open_file needs no KEK: a file that isn't there is refused with a status this
+	// platform describes - which proves the binding reached it.
+	library := installedLibrary(t)
+	path := filepath.Join(t.TempDir(), "missing", "dek.bin")
+
+	read, err := openKeyFile(library, path)
+
+	var keyFileErr *KeyFileError
+	if read != nil || !errors.As(err, &keyFileErr) {
+		t.Fatalf("openKeyFile = %v, %v; want a *KeyFileError", read, err)
+	}
+	if library.describeStatus(keyFileErr.Status) == "" {
+		t.Errorf("undescribed status %d", keyFileErr.Status)
 	}
 }
 

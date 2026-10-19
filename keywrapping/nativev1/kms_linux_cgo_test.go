@@ -30,11 +30,11 @@ import (
 //
 // native_test.go covers what every platform shares; these pin down the exact Linux status codes,
 // the native library's own input checks (which the KeyWrapper's validation normally keeps it from
-// seeing), its zeroing on failure, and the deployment path through hkdfguard-v1-initialize.
+// seeing), its zeroing on failure, and the deployment path through hkdfguard.
 
 const (
 	linuxPolicyPath = "/etc/hkdfguard/policy.toml"
-	linuxCLI        = "/usr/bin/hkdfguard-v1-initialize"
+	linuxCLI        = "/usr/bin/hkdfguard"
 
 	// processHardeningVariable opts in to the test that hardens this very test process.
 	processHardeningVariable = "HKDFGUARD_TEST_PROCESS_HARDENING"
@@ -44,7 +44,7 @@ const (
 // that the tests rely on, so the round trips run only with the variables the provisioning script
 // prints.
 func platformTestEnvironment(defaultService string) testEnvironment {
-	return testEnvironment{skipReason: fmt.Sprintf("Set %s to a service provisioned with hkdfguard-v1-initialize to run native integration tests. On a Linux TPM host, sudo scripts/provision-linux-test-key.sh provisions %s.", testServiceVariable, defaultService)}
+	return testEnvironment{skipReason: fmt.Sprintf("Set %s to a service provisioned with hkdfguard to run native integration tests. On a Linux TPM host, sudo scripts/provision-linux-test-key.sh provisions %s.", testServiceVariable, defaultService)}
 }
 
 // --- The dynamic linker -----------------------------------------------------------------------
@@ -193,7 +193,7 @@ func TestLinuxNative_UnwrappingUnderAnotherProvisionedService_IsAFingerprintMism
 	destination := repeat(0xAA, 64)
 	status, _ := library.unwrapDEK(otherServiceName(), wrapped, destination)
 
-	requireLinuxStatus(t, library, linuxErrFingerprintMismatch, status)
+	requireLinuxStatus(t, library, errKEKFingerprintMismatch, status)
 	requireZero(t, "the destination", destination)
 }
 
@@ -204,11 +204,11 @@ func TestLinuxNative_AServiceTheAllowlistDoesNotName_HasNoKEK(t *testing.T) {
 	}
 
 	status, _ := library.wrapDEK(unprovisionedServiceName, make([]byte, DEKLength), make([]byte, hkdfguard.MaxWrappedKeyBytes))
-	requireLinuxStatus(t, library, linuxErrKEKNotFound, status)
+	requireLinuxStatus(t, library, errKEKNotFound, status)
 	status, _ = library.generateAndWrapDEK(unprovisionedServiceName, make([]byte, hkdfguard.MaxWrappedKeyBytes))
-	requireLinuxStatus(t, library, linuxErrKEKNotFound, status)
-	if !strings.Contains(library.describeStatus(linuxErrKEKNotFound), "provision") {
-		t.Errorf("KEK not found = %q", library.describeStatus(linuxErrKEKNotFound))
+	requireLinuxStatus(t, library, errKEKNotFound, status)
+	if !strings.Contains(library.describeStatus(errKEKNotFound), "provision") {
+		t.Errorf("KEK not found = %q", library.describeStatus(errKEKNotFound))
 	}
 }
 
@@ -243,7 +243,11 @@ func TestLinuxNative_ChangingAnyByteOfThePayload_IsRefused_AndRevealsNothing(t *
 
 		status, _ := library.unwrapDEK(service, tampered, destination)
 
-		if status != linuxErrCryptoError && status != linuxErrFingerprintMismatch {
+		// A changed header byte makes the payload malformed or of an unknown version; a changed
+		// fingerprint routes it to no KEK; anything else fails authentication.
+		switch status {
+		case errPayloadAuthFailed, errPayloadMalformed, errPayloadUnsupported, errKEKFingerprintMismatch:
+		default:
 			t.Errorf("byte %d of %d: status %d (%s)", i, len(wrapped), status, library.describeStatus(status))
 		}
 		requireZero(t, fmt.Sprintf("the destination after changing byte %d", i), destination)
@@ -257,7 +261,7 @@ func TestLinuxNative_ATruncatedOrExtendedPayload_IsRefused(t *testing.T) {
 
 	for _, payload := range [][]byte{wrapped[:len(wrapped)-1], append(bytes.Clone(wrapped), 0), wrapped[:8]} {
 		status, _ := library.unwrapDEK(service, payload, destination)
-		requireLinuxStatus(t, library, linuxErrCryptoError, status)
+		requireLinuxStatus(t, library, errPayloadMalformed, status)
 	}
 }
 
@@ -266,7 +270,7 @@ func TestLinuxNative_AnEmptyPayload_IsRefused(t *testing.T) {
 
 	status, _ := library.unwrapDEK(service, nil, make([]byte, DEKLength))
 
-	if status != linuxErrInvalidArgument && status != linuxErrCryptoError {
+	if status != errInvalidArgument && status != errPayloadMalformed {
 		t.Errorf("status %d (%s)", status, library.describeStatus(status))
 	}
 }
@@ -276,7 +280,7 @@ func TestLinuxNative_ADEKOfTheWrongLength_IsAnInvalidArgument(t *testing.T) {
 
 	for _, length := range []int{0, 16, DEKLength - 1, DEKLength + 1, 64} {
 		status, _ := library.wrapDEK(service, make([]byte, length), make([]byte, hkdfguard.MaxWrappedKeyBytes))
-		requireLinuxStatus(t, library, linuxErrInvalidArgument, status)
+		requireLinuxStatus(t, library, errInvalidArgument, status)
 	}
 }
 
@@ -290,11 +294,11 @@ func TestLinuxNative_TheLibrary_ChecksServiceNamesItself(t *testing.T) {
 			t.Errorf("%q is a valid service name", service)
 		}
 		status, _ := library.wrapDEK(service, make([]byte, DEKLength), make([]byte, hkdfguard.MaxWrappedKeyBytes))
-		requireLinuxStatus(t, library, linuxErrInvalidServiceName, status)
+		requireLinuxStatus(t, library, errInvalidServiceName, status)
 		status, _ = library.generateAndWrapDEK(service, make([]byte, hkdfguard.MaxWrappedKeyBytes))
-		requireLinuxStatus(t, library, linuxErrInvalidServiceName, status)
+		requireLinuxStatus(t, library, errInvalidServiceName, status)
 		status, _ = library.unwrapDEK(service, make([]byte, 100), make([]byte, DEKLength))
-		requireLinuxStatus(t, library, linuxErrInvalidServiceName, status)
+		requireLinuxStatus(t, library, errInvalidServiceName, status)
 	}
 }
 
@@ -304,7 +308,7 @@ func TestLinuxNative_AServiceNameOfTheMaximumLength_IsAccepted(t *testing.T) {
 
 	status, _ := library.wrapDEK(strings.Repeat("a", hkdfguard.MaxServiceNameLength), make([]byte, DEKLength), make([]byte, hkdfguard.MaxWrappedKeyBytes))
 
-	if status == linuxErrInvalidServiceName {
+	if status == errInvalidServiceName {
 		t.Error("a 128-character name was refused as invalid")
 	}
 }
@@ -316,7 +320,7 @@ func TestLinuxNative_ATooSmallBuffer_ReportsACapacityThatSuffices(t *testing.T) 
 	dek := randomDEK(t)
 
 	status, required := library.wrapDEK(service, dek, make([]byte, 1))
-	requireLinuxStatus(t, library, linuxErrBufferTooSmall, status)
+	requireLinuxStatus(t, library, errBufferTooSmall, status)
 	if required <= DEKLength || int(required) > hkdfguard.MaxWrappedKeyBytes {
 		t.Fatalf("required capacity = %d", required)
 	}
@@ -330,14 +334,14 @@ func TestLinuxNative_ATooSmallBuffer_ReportsACapacityThatSuffices(t *testing.T) 
 	exact = exact[:written]
 
 	status, generateRequired := library.generateAndWrapDEK(service, make([]byte, 1))
-	requireLinuxStatus(t, library, linuxErrBufferTooSmall, status)
+	requireLinuxStatus(t, library, errBufferTooSmall, status)
 	if generateRequired != required {
 		t.Errorf("generate requires %d, wrap required %d", generateRequired, required)
 	}
 
 	short := repeat(0xAA, DEKLength-1)
 	status, unwrapRequired := library.unwrapDEK(service, exact, short)
-	requireLinuxStatus(t, library, linuxErrBufferTooSmall, status)
+	requireLinuxStatus(t, library, errBufferTooSmall, status)
 	if unwrapRequired != DEKLength {
 		t.Errorf("unwrap requires %d, want %d", unwrapRequired, DEKLength)
 	}
@@ -392,7 +396,7 @@ func requireCLI(t *testing.T) {
 }
 
 func TestLinuxNative_AKeyFileWrappedByTheProvisioningTool_RevealsItsDEKThroughTheWrapper(t *testing.T) {
-	// The deployment path: hkdfguard-v1-initialize wraps a delivered DEK on the host, in its own
+	// The deployment path: hkdfguard wraps a delivered DEK on the host, in its own
 	// process, and the application unwraps the key file through this binding.
 	_, service := linuxProvisionedLibrary(t)
 	requireCLI(t)
@@ -407,7 +411,7 @@ func TestLinuxNative_AKeyFileWrappedByTheProvisioningTool_RevealsItsDEKThroughTh
 
 	exitCode, output := linuxRunCLI(t, "wrap", "--key-file-path", keyFile, "--service-name", service, "--dek-file", dekFile)
 	if exitCode != 0 {
-		t.Fatalf("hkdfguard-v1-initialize wrap exited %d: %s", exitCode, output)
+		t.Fatalf("hkdfguard wrap exited %d: %s", exitCode, output)
 	}
 	info, err := os.Stat(keyFile)
 	if err != nil {
@@ -437,7 +441,7 @@ func TestLinuxNative_TheProvisioningTool_ReportsTheTestServiceAsProvisioned(t *t
 	requireCLI(t)
 
 	if exitCode, output := linuxRunCLI(t, "provision", "--service-name", service); exitCode != 0 {
-		t.Errorf("hkdfguard-v1-initialize provision exited %d: %s", exitCode, output)
+		t.Errorf("hkdfguard provision exited %d: %s", exitCode, output)
 	}
 }
 

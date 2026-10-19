@@ -28,9 +28,10 @@ const (
 	testOtherServiceVariable = "HKDFGUARD_TEST_SERVICE_OTHER"
 	unprovisionedServiceName = "hkdfguard.integrationtest.unprovisioned"
 
-	// Windows status codes the probe tells "not provisioned" by (see nativev1's status tables).
-	windowsErrKEKNotFound  = -12
-	windowsErrAccessDenied = -13
+	// Status codes the Windows probe tells "not provisioned" by - shared by every platform's
+	// library (see nativev1's status.go).
+	statusKEKNotFound     = -17
+	statusKEKAccessDenied = -18
 
 	// nativeCallTimeout bounds the first native call: on macOS a freshly built test binary is
 	// answered with a keychain dialog (see nativev1's native_test.go).
@@ -97,7 +98,7 @@ func resolveTestEnvironment() testEnvironment {
 				return testEnvironment{skipReason: fmt.Sprintf("The test KEK '%s' is not provisioned. Run keywrapping/nativev1/scripts/provision-macos-test-key.sh, or set %s to a provisioned service.", service, testServiceVariable)}
 			}
 		case "linux":
-			return testEnvironment{skipReason: fmt.Sprintf("Set %s to a service provisioned with hkdfguard-v1-initialize. On a Linux TPM host, sudo keywrapping/nativev1/scripts/provision-linux-test-key.sh provisions %s.", testServiceVariable, service)}
+			return testEnvironment{skipReason: fmt.Sprintf("Set %s to a service provisioned with hkdfguard. On a Linux TPM host, sudo keywrapping/nativev1/scripts/provision-linux-test-key.sh provisions %s.", testServiceVariable, service)}
 		}
 	}
 
@@ -105,14 +106,14 @@ func resolveTestEnvironment() testEnvironment {
 	// also says whether the default service is provisioned.
 	err, timedOut := probe(wrapper)
 	if timedOut {
-		return testEnvironment{failReason: fmt.Sprintf("the first native call under service '%s' has not returned after %v. On macOS the KEK's keychain item is asking for access in a dialog: click \"Always Allow\" (every freshly built test binary asks once). In a session with no UI the library reports keychainAccessDenied (-17) instead", service, nativeCallTimeout)}
+		return testEnvironment{failReason: fmt.Sprintf("the first native call under service '%s' has not returned after %v. On macOS the KEK's keychain item is asking for access in a dialog: click \"Always Allow\" (every freshly built test binary asks once). In a session with no UI the library reports KEK_ACCESS_DENIED (-18) instead", service, nativeCallTimeout)}
 	}
 	var statusErr *nativev1.StatusError
 	if !explicit && runtime.GOOS == "windows" && errors.As(err, &statusErr) {
 		switch statusErr.Status {
-		case windowsErrKEKNotFound:
+		case statusKEKNotFound:
 			return testEnvironment{skipReason: fmt.Sprintf("The test KEK '%s' is not provisioned. Run keywrapping/nativev1/scripts/provision-windows-test-key.ps1 from an elevated PowerShell, or set %s to a provisioned service.", service, testServiceVariable)}
-		case windowsErrAccessDenied:
+		case statusKEKAccessDenied:
 			return testEnvironment{skipReason: fmt.Sprintf("The test KEK '%s' exists, but this account may not use it. Add it to the HkdfGuardUsers group (then sign out and in), or run the tests elevated.", service)}
 		}
 	}

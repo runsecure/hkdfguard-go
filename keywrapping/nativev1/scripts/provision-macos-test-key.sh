@@ -21,7 +21,7 @@
 # The KEK's keychain item names the binary that created it (this tool) on its access list, so the
 # first native call from each freshly built test binary is answered with a keychain dialog: click
 # "Always Allow". From a session with no UI (ssh, a CI agent) the library reports
-# keychainAccessDenied (-17) instead, so run the tests from a logged-in session.
+# KEK_ACCESS_DENIED (-18) instead, so run the tests from a logged-in session.
 #
 # Usage (from keywrapping/nativev1):
 #   scripts/provision-macos-test-key.sh            # provision

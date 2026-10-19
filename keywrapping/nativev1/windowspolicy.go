@@ -10,7 +10,7 @@ import (
 // passed in as plain data) so they can be checked on any platform. The loader (kms_windows.go)
 // loads the library from its one installed location and nowhere else, after five checks:
 //
-//  1. The file exists at %ProgramFiles%\HkdfGuard\v1\HkdfGuardV1.dll. The Program Files location
+//  1. The file exists at %ProgramFiles%\HkdfGuard\v1\HkdfGuard.dll. The Program Files location
 //     comes from the known-folder registry setting, which only an administrator can change, not
 //     from the ProgramFiles environment variable.
 //  2. No component of that path, from the file up to (not including) the drive root, is a reparse
@@ -21,12 +21,12 @@ import (
 //     HkdfGuard's Artifact Signing profile (winExpectedProfileEKU), whose chain - as
 //     WinVerifyTrust validated it - ends at the pinned root winExpectedRootSHA256.
 //  5. Its PE header - covered by that signature - marks it a DLL for this process's architecture,
-//     which refuses the profile's other binaries (hkdfguard-v1-initialize.exe renamed into place).
+//     which refuses the profile's other binaries (hkdfguard.exe renamed into place).
 //
 // The library's own dependencies are then resolved from System32 only.
 
 const (
-	winFileName = "HkdfGuardV1.dll"
+	winFileName = "HkdfGuard.dll"
 
 	// winExpectedPublisher is the Authenticode signer subject the library must carry, as Windows
 	// renders it (CertNameToStr, X.500 form, reversed). The signing certificate is short-lived and

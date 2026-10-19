@@ -91,7 +91,7 @@ func linuxVerifyLoaded(handle unsafe.Pointer, path string) (kmsLibrary, error) {
 	if err := linuxVerifyDependencies(path, elfReadNeededFile, linuxLoadedPath, linuxTrustedFile); err != nil {
 		return nil, err
 	}
-	return bindDL(handle, "hkdfguard_harden_process", linuxStatusDescriptions)
+	return bindDL(handle, "hkdfguard_harden_process", describeLinuxStatus)
 }
 
 // linuxLoadedPath is the path the dynamic linker recorded for the already-loaded object it would

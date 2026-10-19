@@ -34,7 +34,7 @@ Two separate things are installed:
 | Part | Where it comes from | What it does |
 |---|---|---|
 | The Go modules | `go get github.com/runsecure/hkdfguard-go`, `.../cryptoprovider/aesgcm256` and `.../keywrapping/nativev1` | Everything your code calls |
-| The native library and `hkdfguard-v1-initialize` | The HkdfGuard native package: `%ProgramFiles%\HkdfGuard\v1` on Windows, `/Library/Application Support/HkdfGuard/v1` (or `~/.hkdfguard/v1`) on macOS | Hold and use the KEK |
+| The native library and its `hkdfguard` tool (`hkdfguard-v1-initialize` on macOS) | The HkdfGuard native package: `%ProgramFiles%\HkdfGuard\v1` on Windows, `/Library/Application Support/HkdfGuard/v1` (or `~/.hkdfguard/v1`) on macOS | Hold and use the KEK |
 
 The Go library loads the native library only from that location, and only after checking the
 folder's ownership and permissions and the library's code signature. It never searches `PATH`,
@@ -50,7 +50,7 @@ folder's ownership and permissions and the library's code signature. It never se
 Check that it installed:
 
 ```powershell
-Get-AuthenticodeSignature "$env:ProgramFiles\HkdfGuard\v1\HkdfGuardV1.dll" | Select-Object Status, SignerCertificate
+Get-AuthenticodeSignature "$env:ProgramFiles\HkdfGuard\v1\HkdfGuard.dll" | Select-Object Status, SignerCertificate
 ```
 
 `Status` must be `Valid`.
@@ -78,7 +78,7 @@ allowed.
 **Windows:** open PowerShell **as administrator** and run:
 
 ```powershell
-& "$env:ProgramFiles\HkdfGuard\v1\hkdfguard-v1-initialize.exe" provision --service-name com.example.myapp
+& "$env:ProgramFiles\HkdfGuard\v1\hkdfguard.exe" provision --service-name com.example.myapp
 ```
 
 This creates the KEK in the TPM. Running it again is safe: if the KEK already exists, the command
@@ -217,10 +217,23 @@ session tokens. Data you store needs a key file.
 
 A **key file** holds one wrapped DEK. It is useless without the KEK, so it is not a secret in the
 usual sense, but its permissions still matter. Anyone who can replace it controls the key your
-application encrypts new data with. The Go library refuses a key file that its group or other
-users can write (on Unix), or that isn't a regular file.
+application encrypts new data with. So the Go library reads every key file through the native
+library (`hkdfguard_open_file`), which refuses:
 
-You create a key file once per release, or per key rotation, with `hkdfguard-v1-initialize wrap`.
+- a file, or a folder above it, that an account other than SYSTEM, Administrators,
+  TrustedInstaller (Windows) or the account reading it could write or replace, and a path through a
+  symbolic link, junction or other reparse point, an 8.3 short name (`PROGRA~1`), or a network,
+  mapped or SUBST drive - a folder created directly under `C:\` inherits "Authenticated Users:
+  Modify" and is refused until its permissions are narrowed;
+- a file holding what looks like an *unwrapped* key - 32 raw bytes, or 64 hex digits, or base64,
+  with or without surrounding whitespace. Treat that as a key exposure: the key is compromised;
+- a file of the wrong size, or the right size but not a valid wrapped key.
+
+Each refusal is a `*nativev1.KeyFileError` naming the file, the status and what it means. The file
+comes back still wrapped: reading it opens no KEK.
+
+You create a key file once per release, or per key rotation, with the tool's `wrap` command
+(`hkdfguard wrap`; `hkdfguard-v1-initialize wrap` on macOS).
 The tool reads the DEK on standard input, wraps it under the service's KEK, and writes the file
 with restricted permissions. On Windows its `--group` option names the local group whose members
 can read the file.
@@ -249,7 +262,7 @@ import (
 	"github.com/runsecure/hkdfguard-go/dek"
 )
 
-// createKeyFile generates a DEK, passes it to hkdfguard-v1-initialize wrap on standard input, and
+// createKeyFile generates a DEK, passes it to the tool's wrap command on standard input, and
 // zeroes every copy it controls. group is the local group allowed to read the key file (Windows
 // requires it; leave it empty elsewhere).
 func createKeyFile(toolPath, serviceName, keyFilePath, group string) error {
@@ -278,7 +291,7 @@ func createKeyFile(toolPath, serviceName, keyFilePath, group string) error {
 	_, writeErr := stdin.Write(protector.KeyBase64())
 	closeErr := stdin.Close()
 	if err := tool.Wait(); err != nil {
-		return fmt.Errorf("hkdfguard-v1-initialize wrap: %w", err)
+		return fmt.Errorf("hkdfguard wrap: %w", err)
 	}
 	return errors.Join(writeErr, closeErr)
 }
@@ -288,7 +301,7 @@ Call it once. On Windows:
 
 ```go
 err := createKeyFile(
-	filepath.Join(os.Getenv("ProgramFiles"), `HkdfGuard\v1\hkdfguard-v1-initialize.exe`),
+	filepath.Join(os.Getenv("ProgramFiles"), `HkdfGuard\v1\hkdfguard.exe`),
 	"com.example.myapp",
 	`C:\ProgramData\MyApp\keys\v1.key`,
 	"HkdfGuardUsers")
@@ -336,23 +349,28 @@ The same settings can come from a file shared with the .NET port: `dek.OptionsFr
 ## If something goes wrong
 
 Every error wraps a sentinel you can test with `errors.Is`, and a failed native call is a
-`*nativev1.StatusError` (`errors.As`) whose message includes the status code and its meaning.
+`*nativev1.StatusError` (`errors.As`) whose message includes the status code and its meaning. A
+key file the native library refused is a `*nativev1.KeyFileError` instead. The status codes are
+the same on Windows, Linux and macOS.
 
 | You see | Cause | Fix |
 |---|---|---|
 | `nativev1.ErrNotInstalled` | The native package isn't installed at its fixed location | Step 1 |
 | `nativev1.ErrUntrusted` | The installed library, or a folder above it, failed verification: wrong signature, writable by non-administrators, or (macOS) a `DYLD_LIBRARY_PATH` entry shadows it | Reinstall the native package; don't change that folder's permissions; clear the linker variables |
 | `nativev1.ErrUnsupportedPlatform` | Built with `CGO_ENABLED=0` on macOS or Linux, or an Intel Mac / an amd64 binary under Rosetta | Build with `CGO_ENABLED=1` for `darwin/arm64` |
-| `StatusError` `-12` (Windows), `-10` (macOS) | No KEK is provisioned for this service name | Step 2, with the same service name |
-| `StatusError` `-13` (Windows) | The KEK exists, but this account may not use it | Add the account to `HkdfGuardUsers`, then sign out and in |
-| `StatusError` `-17` (macOS) | The keychain would not answer: locked, no UI session for the access prompt, or the prompt was declined | Run from a logged-in session and choose Always Allow |
-| `StatusError` `-11` (Windows), `-16` (macOS) | The key file was wrapped under a different service's KEK | Use the service name the file was created with |
-| `StatusError` `-5` (Windows), `-6` (macOS) | The key file was altered | Restore it from your deployment artifacts |
+| `StatusError` `-17` | No KEK is provisioned for this service name | Step 2, with the same service name |
+| `StatusError` `-18` (Windows) | The KEK exists, but this account may not use it | Add the account to `HkdfGuardUsers`, then sign out and in |
+| `StatusError` `-18` (macOS) | The keychain would not answer: locked, no UI session for the access prompt, or the prompt was declined | Run from a logged-in session and choose Always Allow |
+| `StatusError` `-16` | The key file was wrapped under a different service's KEK | Use the service name the file was created with |
+| `StatusError` `-10`, `-11` or `-12` | The key file was altered (malformed, failed authentication, or an unknown version) | Restore it from your deployment artifacts |
 | `hkdfguard.ErrInvalidServiceName` | The name breaks the rule in step 2 | Use letters, digits and dots only |
-| `dek.ErrInvalidKeyFile` | The key file is empty, too large, not a regular file, or writable by its group or others | Fix its permissions (`0600` or `0640`), or recreate it with `wrap` |
+| `KeyFileError` `-32`, `fs.ErrNotExist` | The key file, or a folder in its path, does not exist | Check the path in `KeyFiles` |
+| `KeyFileError` `-33` or `-39`, `fs.ErrPermission` | This account may not read the key file, or the native library doesn't trust its location (a link or junction, a short or network path, or a file or folder another account could replace) | Grant read access; use a real local path in a folder only administrators (and the reading account) can change |
+| `KeyFileError` `-37`, `hkdfguard.ErrInvalidKeyFile` | The file holds what looks like an **unwrapped** key | Treat the key as exposed: rotate it, delete the file, and create a key file with `wrap` |
+| `KeyFileError` `-35`, `-36` or `-38`, `hkdfguard.ErrInvalidKeyFile` | The key file is the wrong size, or not a valid wrapped key | Recreate it with `wrap` |
 | `hkdfguard.ErrKeyAccessSuspended` | The KEK stopped answering for three refreshes in a row | Restore access to the KEK; operations resume on the next successful refresh |
 
 ## Next steps
 
-- [`hkdfguard-v1-initialize` reference](reference/cli.md): every command and option.
+- [`hkdfguard` tool reference](reference/cli.md): every command and option.
 - The README's `dek`, `encryptedconfig` and `cache` sections, until their how-to pages are written.

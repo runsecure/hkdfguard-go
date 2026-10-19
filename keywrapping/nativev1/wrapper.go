@@ -3,7 +3,9 @@ package nativev1
 import (
 	"context"
 	"fmt"
+	"io/fs"
 	"math"
+	"strings"
 
 	"github.com/runsecure/hkdfguard-go"
 )
@@ -15,8 +17,8 @@ const DEKLength = 32
 const statusOK = 0
 
 // kmsLibrary is one platform's native HkdfGuard KMS library: hkdfguard_wrap_dek,
-// hkdfguard_unwrap_dek and hkdfguard_generate_and_wrap_dek, identical in shape across platforms,
-// though each library's negative status codes mean different things.
+// hkdfguard_unwrap_dek, hkdfguard_generate_and_wrap_dek and hkdfguard_open_file, identical in shape
+// across platforms, as are their status codes (status.go).
 type kmsLibrary interface {
 	// wrapDEK wraps dek under service's KEK into out. On success written is the payload length;
 	// on a buffer-too-small failure, the required capacity.
@@ -28,6 +30,11 @@ type kmsLibrary interface {
 	// generateAndWrapDEK generates a fresh DEK and wraps it into out; the plaintext DEK never
 	// crosses this boundary.
 	generateAndWrapDEK(service string, out []byte) (status, written int32)
+
+	// openFile reads the key file at path into out through hkdfguard_open_file, without unwrapping
+	// it. On success read is the number of bytes read. err wraps ErrUnsupportedPlatform when the
+	// loaded library has no such call.
+	openFile(path string, out []byte) (status, read int32, err error)
 
 	// describeStatus is what a non-zero status means on this platform, or "" if unknown.
 	describeStatus(status int32) string
@@ -49,7 +56,10 @@ type KeyWrapper struct {
 	library kmsLibrary
 }
 
-var _ hkdfguard.KeyWrapper = (*KeyWrapper)(nil)
+var (
+	_ hkdfguard.KeyWrapper    = (*KeyWrapper)(nil)
+	_ hkdfguard.KeyFileReader = (*KeyWrapper)(nil)
+)
 
 // New returns a KeyWrapper for the KEK identified by serviceName - 1 to 128 ASCII letters, digits
 // or '.', not starting with '.' and without ".." (see hkdfguard.ValidateServiceName). The name is
@@ -122,6 +132,50 @@ func (w *KeyWrapper) GenerateAndWrap(ctx context.Context, result []byte) (int, e
 
 	status, written := w.library.generateAndWrapDEK(w.service, result)
 	return w.complete("generate-and-wrap", status, written, result)
+}
+
+// ReadKeyFile reads a key file through the native library's hkdfguard_open_file rather than Go
+// file I/O, returning its bytes still wrapped - ready for Unwrap. Nothing is unwrapped and no KEK
+// is touched, so any service's wrapper reads any key file. Besides the size and format checks, the
+// native library refuses a file another account could have written or replaced - its path, owner
+// and permissions are checked the way only the platform can - and one holding what looks like an
+// unwrapped key. dek.Build reads every key file this way (it implements hkdfguard.KeyFileReader).
+//
+// A refusal is a *KeyFileError naming the path, status and its meaning; it satisfies
+// errors.Is(err, fs.ErrNotExist) for a missing file, errors.Is(err, fs.ErrPermission) for one this
+// account may not read or whose location isn't trusted, and errors.Is(err,
+// hkdfguard.ErrInvalidKeyFile) for one that isn't a wrapped key. An empty path never reaches the
+// native library.
+func (w *KeyWrapper) ReadKeyFile(ctx context.Context, path string) ([]byte, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return openKeyFile(w.library, path)
+}
+
+// openKeyFile is hkdfguard_open_file returning the bytes read, or an error. Every platform's
+// wrapped DEK fits in hkdfguard.MaxWrappedKeyBytes (Windows 132, Linux 276, macOS 125 bytes), so
+// one buffer never needs the size probe.
+func openKeyFile(library kmsLibrary, path string) ([]byte, error) {
+	if path == "" {
+		return nil, fmt.Errorf("nativev1: the key file path is empty: %w", fs.ErrInvalid)
+	}
+	if strings.IndexByte(path, 0) >= 0 {
+		return nil, fmt.Errorf("nativev1: the key file path '%s' contains a NUL byte: %w", path, fs.ErrInvalid)
+	}
+
+	buffer := make([]byte, hkdfguard.MaxWrappedKeyBytes)
+	status, read, err := library.openFile(path, buffer)
+	if err != nil {
+		return nil, err
+	}
+	if status != statusOK {
+		return nil, &KeyFileError{Path: path, Status: status, Description: library.describeStatus(status)}
+	}
+	if read <= 0 || int(read) > len(buffer) {
+		return nil, fmt.Errorf("nativev1: native KMS open-file for '%s' reported %d bytes read into a %d-byte buffer", path, read, len(buffer))
+	}
+	return buffer[:read:read], nil
 }
 
 // checkCall refuses a cancelled call, and buffers whose length the native int32 can't carry,

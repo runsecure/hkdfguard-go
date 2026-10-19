@@ -7,7 +7,7 @@ Windows PC or an Apple-silicon Mac, from nothing to encrypting and decrypting wi
 platform protects (TPM or Secure Enclave), then to a durable key file.
 
 **Running HkdfGuard in production** (installing, provisioning, creating key files): see the
-[`hkdfguard-v1-initialize` reference](reference/cli.md).
+[`hkdfguard` tool reference](reference/cli.md).
 
 **Porting from the .NET libraries:** the same pages exist in `hkdfguard-dotnet/docs`, with the
 same structure. Everything a value or a key file is made of - the `enc::v<version>::<base64>`
@@ -24,8 +24,8 @@ byte-identical between the ports, so one deployment serves both.
 | How-to | Rotate keys | Planned (see the README's `dek` section for now) |
 | How-to | Load settings from an `appsettings.json` shared with the .NET port | Planned (see `dek.OptionsFromJSON` in the README) |
 | How-to | Troubleshoot | Planned (see [If something goes wrong](getting-started.md#if-something-goes-wrong)) |
-| Reference | [`hkdfguard-v1-initialize`](reference/cli.md) | Draft (Windows and macOS; Linux partial) |
-| Reference | Native status codes | Planned (the tables in `keywrapping/nativev1/status.go` for now) |
+| Reference | [`hkdfguard` tool](reference/cli.md) | Draft (Windows and macOS; Linux partial) |
+| Reference | Native status codes | Planned (the shared table in `keywrapping/nativev1/status.go` for now) |
 | Reference | `dek.Options` / configuration schema | Planned |
 | Reference | API | [pkg.go.dev](https://pkg.go.dev/github.com/runsecure/hkdfguard-go), generated from the doc comments |
 | Explanation | Key hierarchy: KEK, wrapped DEK, AES-GCM | Planned (see [How the pieces fit](getting-started.md#how-the-pieces-fit)) |
@@ -36,7 +36,7 @@ byte-identical between the ports, so one deployment serves both.
 
 - Every code sample in these pages compiles against the current source. When you change one,
   build it before committing.
-- Facts about `hkdfguard-v1-initialize` come from its own `--help` output and observed behavior.
+- Facts about the `hkdfguard` tool come from its own `--help` output and observed behavior.
   Anything not yet confirmed is marked **TODO (maintainer)**; search for that string before
   publishing.
 - Security rules are stated as rules, at the step where they apply, in a block that starts with

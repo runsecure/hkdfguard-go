@@ -8,14 +8,14 @@ Secure Enclave key on macOS, a Platform Crypto Provider key on Windows. Values, 
 and names are byte-identical between the ports, so one deployment serves both.
 
 **Documentation:** [docs/](docs/README.md) - a [getting-started tutorial](docs/getting-started.md)
-and the [`hkdfguard-v1-initialize` reference](docs/reference/cli.md).
+and the [`hkdfguard` tool reference](docs/reference/cli.md).
 
 ## Packages
 
 ### `hkdfguard` (module root)
 
 Go port of `HkdfGuard.Abstractions`: the interfaces every implementation satisfies
-(`KeyWrapper`, `CryptoProviderFactory`/`CryptoProvider`, `DataEncryptionKey`, `KeyRing`,
+(`KeyWrapper` and its optional `KeyFileReader`, `CryptoProviderFactory`/`CryptoProvider`, `DataEncryptionKey`, `KeyRing`,
 `EncryptedFormatProvider`, `DataProtector`, `PipelineDataProtector`, `ProtectedCache`), the shared
 cross-port rules (`ConfigurationPurpose`/`ConfigurationAAD`, `ValidateServiceName`), limits and
 defaults, and the `Wipe`/`IsZero` secret-memory helpers. Implementation packages import this one
@@ -60,6 +60,12 @@ ring, err := dek.Build(ctx, dek.Config{
 })
 protector, err := ring.CreateProtector("orders")
 ```
+
+`Build` reads each key file through its `KeyWrapper` when the wrapper implements
+`hkdfguard.KeyFileReader` - the native key wrapper does, so the native library checks the file
+(see below) - and with `hkdfguard.ReadWrappedKeyFile` otherwise. Either way a file that isn't a
+wrapped key fails with an error wrapping `hkdfguard.ErrInvalidKeyFile` (`dek.ErrInvalidKeyFile` is
+the same sentinel).
 
 Settings can also come from a file. `dek.Options` has the field names and units of the .NET
 port's `HkdfGuardOptions`, so one `appsettings.json` section configures both ports:
@@ -117,6 +123,23 @@ linker's environment.
 wrapper, err := nativev1.New("com.example.orders") // service must be provisioned first
 ```
 
+It also reads key files through the native library's `hkdfguard_open_file` (`KeyWrapper.ReadKeyFile`,
+which `dek.Build` uses), so the bytes come back still wrapped after the native checks: the file's
+size and format; that it doesn't hold what looks like an *unwrapped* key (32 raw bytes, or its hex
+or base64 - treat that as a key exposure); and that no account other than an administrator or the
+reader could have written or replaced it, nor redirected its path through a link, junction, 8.3
+short name or network path. A refusal is a `*nativev1.KeyFileError` naming the file, the status
+and its meaning, matchable with `errors.Is` against `fs.ErrNotExist`, `fs.ErrPermission` or
+`hkdfguard.ErrInvalidKeyFile`.
+
+Every platform's native library returns the same status codes (the header's `HKDFGUARD_ERR_*`
+table: -17 no KEK, -18 access denied, -10..-12 a malformed, altered or unsupported payload, -16 a
+payload wrapped under another KEK, -32..-39 key-file refusals, and so on); a `*nativev1.StatusError`
+or `*nativev1.KeyFileError` carries the code and what it means on this platform. The installed
+files are `%ProgramFiles%\HkdfGuard\v1\HkdfGuard.dll` and `hkdfguard.exe` on Windows,
+`libhkdfguard.so.1` and `/usr/bin/hkdfguard` on Linux, and `libhkdfguard_v1.dylib` and
+`hkdfguard-v1-initialize` on macOS.
+
 It is its own module (`github.com/runsecure/hkdfguard-go/keywrapping/nativev1`) because macOS and
 Linux builds need cgo (`CGO_ENABLED=1` and a C toolchain); Windows needs neither. See
 [Testing](#testing) for its native integration tests.
@@ -144,13 +167,14 @@ as skipped, never passed, unless the test service exists: on Windows and macOS t
 by themselves (through the library's `hkdfguard_kek_exists` export, and the provisioning tool's
 `status` command, respectively); on Linux, and for any other service, set `HKDFGUARD_TEST_SERVICE`.
 `HKDFGUARD_TEST_SERVICE_OTHER` names a second provisioned service for the cross-service isolation
-tests. To provision a test host, run from `keywrapping/nativev1`:
+tests. On Windows the key-file tests (`keyfile_windows_test.go`) also run against the installed
+library: its refusals need no KEK, and reading back a real key file uses the test service. To provision a test host, run from `keywrapping/nativev1`:
 
 - Linux: `sudo scripts/provision-linux-test-key.sh` (TPM-backed test KEKs and policy; `--remove` undoes it)
 - macOS: `scripts/provision-macos-test-key.sh` as the account that runs the tests (`--remove` retires the KEK)
 - Windows: `./scripts/provision-windows-test-key.ps1` from an elevated PowerShell
 
-Each checks the installed `hkdfguard-v1-initialize` against the same pins the loader applies before
+Each checks the installed `hkdfguard` tool (`hkdfguard-v1-initialize` on macOS) against the same pins the loader applies before
 running it, and prints the `go test` command to run next. They provision the same KEKs as the .NET
 port's copies, so one host serves both ports' tests.
 
@@ -161,13 +185,13 @@ cd integration && CGO_ENABLED=1 go test ./...            # end to end across the
 
 With a service, the Linux run also checks the exact Linux status codes, the native library's own
 service-name and length checks, that a failed unwrap zeroes the caller's buffer, that tampering
-anywhere in a payload is refused, and that a key file written by `hkdfguard-v1-initialize wrap`
+anywhere in a payload is refused, and that a key file written by `hkdfguard wrap`
 unwraps through the wrapper; `HKDFGUARD_TEST_PROCESS_HARDENING=1` adds the test that hardens the
 test process itself (`HardenProcess`).
 
 **macOS:** in the native library's legacy keychain mode the KEK's access list names the binary
 that created it, so the first native call from each freshly built test binary is answered with a
-keychain dialog in a logged-in session - click "Always Allow" - and with status -17 where there is
+keychain dialog in a logged-in session - click "Always Allow" - and with status -18 where there is
 no UI. The tests fail with a message saying so after 60 seconds rather than hang; this is a
 property of the native library, shared with the .NET port.
 

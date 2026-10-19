@@ -18,7 +18,7 @@ import (
 )
 
 // The Windows loader's checks against this machine's real filesystem, WinVerifyTrust and the
-// installed HkdfGuardV1.dll where there is one. windowspolicy_test.go checks the decisions
+// installed HkdfGuard.dll where there is one. windowspolicy_test.go checks the decisions
 // against plain data on every platform.
 
 // winInstalledPath is the one location the library is loaded from.
@@ -52,9 +52,9 @@ func platformTestEnvironment(defaultService string) testEnvironment {
 		return testEnvironment{service: defaultService}
 	case status == statusOK && exists:
 		return testEnvironment{service: defaultService}
-	case status == statusOK || status == winErrKEKNotFound:
+	case status == statusOK || status == errKEKNotFound:
 		return testEnvironment{skipReason: fmt.Sprintf("The test KEK '%s' is not provisioned. Run scripts/provision-windows-test-key.ps1 from an elevated PowerShell, or set %s to a provisioned service.", defaultService, testServiceVariable)}
-	case status == winErrAccessDenied:
+	case status == errKEKAccessDenied:
 		return testEnvironment{skipReason: fmt.Sprintf("The test KEK '%s' exists, but this account may not use it. Add it to the HkdfGuardUsers group (then sign out and in), or run the tests elevated.", defaultService)}
 	default:
 		return testEnvironment{service: defaultService}
@@ -192,7 +192,7 @@ func TestWindows_ATamperedCopyOfTheInstalledLibrary_IsRefused(t *testing.T) {
 func TestWindows_TheInstalledProvisioningTool_PassesTheSignerChecks_ButIsRefusedAsNotADLL(t *testing.T) {
 	// Installed beside the library and signed under the same profile: only the image check
 	// tells them apart.
-	tool := filepath.Join(filepath.Dir(installedWindowsLibraryPath(t)), "hkdfguard-v1-initialize.exe")
+	tool := filepath.Join(filepath.Dir(installedWindowsLibraryPath(t)), "hkdfguard.exe")
 	if _, err := os.Stat(tool); err != nil {
 		t.Fatalf("%s is installed with the library: %v", tool, err)
 	}
@@ -211,7 +211,7 @@ func TestWindows_KEKExists_AnswersForAnUnprovisionedService(t *testing.T) {
 	if err != nil || exists {
 		t.Errorf("winKEKExists = %d, %v, %v; want no KEK", status, exists, err)
 	}
-	if status != statusOK && windowsStatusDescriptions[status] == "" {
+	if status != statusOK && describeWindowsStatus(status) == "" {
 		t.Errorf("undescribed status %d", status)
 	}
 }

@@ -40,6 +40,12 @@ func buildRing(t *testing.T, service string, o ringOptions) (*dek.KeyRing, error
 	if err != nil {
 		t.Fatal(err)
 	}
+	return buildRingWith(t, wrapper, o)
+}
+
+// buildRingWith assembles a ring over wrapper's KEK.
+func buildRingWith(t *testing.T, wrapper *nativev1.KeyWrapper, o ringOptions) (*dek.KeyRing, error) {
+	t.Helper()
 	config := dek.Config{
 		KeyWrapper:            wrapper,
 		CryptoProviderFactory: aesgcm256.NewFactory(),
@@ -102,7 +108,7 @@ func runPipeline(t *testing.T, service string, secrets map[string]string) (strin
 		t.Fatal(err)
 	}
 
-	path := filepath.Join(t.TempDir(), "wrapped-dek-v3.bin")
+	path := filepath.Join(keyFileDirectory(t), "wrapped-dek-v3.bin")
 	if err := os.WriteFile(path, wrapped[:n], 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -241,9 +247,39 @@ func TestATamperedKeyFile_RefusesToBuild(t *testing.T) {
 
 	_, err = buildRing(t, service, ringOptions{keyFile: keyFile})
 
+	// Refused when the file is read (a changed header field) or when it is unwrapped (anything
+	// else), either way by the native library.
 	var statusErr *nativev1.StatusError
-	if !errors.As(err, &statusErr) {
-		t.Errorf("error = %v, want a native *StatusError", err)
+	var keyFileErr *nativev1.KeyFileError
+	if !errors.As(err, &statusErr) && !errors.As(err, &keyFileErr) {
+		t.Errorf("error = %v, want a native *StatusError or *KeyFileError", err)
+	}
+}
+
+func TestAKeyFile_IsReadThroughTheNativeLibrary_StillWrapped(t *testing.T) {
+	service := testServiceName(t)
+	keyFile, values := runPipeline(t, service, map[string]string{"Secret": "read natively"})
+	wrapper, err := nativev1.New(service)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// What dek.Build does for each key file.
+	read, err := hkdfguard.ReadKeyFile(ctx, wrapper, keyFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	onDisk, err := os.ReadFile(keyFile)
+	if err != nil || !bytes.Equal(read, onDisk) {
+		t.Fatalf("the native read differs from the file: %v", err)
+	}
+
+	ring := mustBuildRing(t, service, ringOptions{keyFile: keyFile})
+	if version, err := ring.CurrentVersion(); err != nil || version != keyFileVersion {
+		t.Errorf("CurrentVersion = %d, %v; want %d", version, err, keyFileVersion)
+	}
+	if got := mustReveal(t, configReader(t, ring, values), "Secret"); got != "read natively" {
+		t.Errorf("revealed %q", got)
 	}
 }
 

@@ -26,6 +26,13 @@ type fakeLibrary struct {
 
 	describe func(int32) string
 	harden   func() int32 // nil: no hardening call on this platform
+
+	openFileStatus  int32
+	openFilePayload []byte
+	openFileRead    *int32 // overrides the count read on success
+	openFileErr     error  // the library has no open-file call
+	openFilePaths   []string
+	openFileCaps    []int
 }
 
 func (f *fakeLibrary) emit(status int32, payload, out []byte) (int32, int32) {
@@ -79,6 +86,22 @@ func (f *fakeLibrary) describeStatus(status int32) string {
 		return ""
 	}
 	return f.describe(status)
+}
+
+func (f *fakeLibrary) openFile(path string, out []byte) (int32, int32, error) {
+	f.openFilePaths = append(f.openFilePaths, path)
+	f.openFileCaps = append(f.openFileCaps, len(out))
+	if f.openFileErr != nil {
+		return 0, 0, f.openFileErr
+	}
+	if f.openFileStatus != statusOK {
+		return f.openFileStatus, 0, nil
+	}
+	n := int32(copy(out, f.openFilePayload))
+	if f.openFileRead != nil {
+		n = *f.openFileRead
+	}
+	return statusOK, n, nil
 }
 
 func (f *fakeLibrary) hardenProcess() (int32, error) {
@@ -220,9 +243,9 @@ func TestFailures_ReportTheOperationServiceAndStatus(t *testing.T) {
 
 func TestAFailureTheLibraryCanDescribe_NamesWhatTheStatusMeans(t *testing.T) {
 	library := &fakeLibrary{
-		unwrapStatus: -13,
+		unwrapStatus: errKEKAccessDenied,
 		describe: func(s int32) string {
-			if s == -13 {
+			if s == errKEKAccessDenied {
 				return "this account is not authorized to use the KEK"
 			}
 			return ""
@@ -232,7 +255,7 @@ func TestAFailureTheLibraryCanDescribe_NamesWhatTheStatusMeans(t *testing.T) {
 
 	_, err := w.Unwrap(context.Background(), []byte{1}, make([]byte, 32))
 
-	want := "Native KMS unwrap failed for service 'service.d' with status -13 (this account is not authorized to use the KEK)."
+	want := "Native KMS unwrap failed for service 'service.d' with status -18 (this account is not authorized to use the KEK)."
 	if err == nil || err.Error() != want {
 		t.Errorf("error = %v, want %q", err, want)
 	}
@@ -312,22 +335,22 @@ func TestHardenProcess_SucceedsWhenTheLibraryReportsOK(t *testing.T) {
 
 func TestHardenProcess_FailureNamesTheStatusAndItsMeaning(t *testing.T) {
 	library := &fakeLibrary{
-		harden:   func() int32 { return linuxErrProcessHardeningFailed },
+		harden:   func() int32 { return errProcessHardeningFailed },
 		describe: func(int32) string { return "could not disable core dumps" },
 	}
 
 	err := hardenProcess(library)
 
-	want := "Native process hardening failed with status -17 (could not disable core dumps)."
+	want := "Native process hardening failed with status -20 (could not disable core dumps)."
 	if err == nil || err.Error() != want {
 		t.Errorf("error = %v, want %q", err, want)
 	}
 }
 
 func TestHardenProcess_WithAnUnknownStatus_GivesJustTheStatus(t *testing.T) {
-	err := hardenProcess(&fakeLibrary{harden: func() int32 { return -99 }})
+	err := hardenProcess(&fakeLibrary{harden: func() int32 { return -150 }})
 
-	if err == nil || !strings.HasSuffix(err.Error(), "status -99.") {
+	if err == nil || !strings.HasSuffix(err.Error(), "status -150.") {
 		t.Errorf("error = %v", err)
 	}
 }

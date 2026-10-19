@@ -12,6 +12,7 @@ package nativev1
 typedef int32_t (*hg_wrap_fn)(const char*, const uint8_t*, int32_t, uint8_t*, int32_t*);
 typedef int32_t (*hg_generate_fn)(const char*, uint8_t*, int32_t*);
 typedef int32_t (*hg_harden_fn)(void);
+typedef int32_t (*hg_open_file_fn)(const char*, uint8_t*, int32_t*);
 
 // The native functions are reached through dlsym'd pointers, so cgo needs these trampolines to
 // call them. hkdfguard_wrap_dek and hkdfguard_unwrap_dek share one signature.
@@ -25,6 +26,10 @@ static int32_t hg_call_generate(void* fn, const char* service, uint8_t* out, int
 
 static int32_t hg_call_harden(void* fn) {
 	return ((hg_harden_fn)fn)();
+}
+
+static int32_t hg_call_open_file(void* fn, const char* path, uint8_t* out, int32_t* out_len) {
+	return ((hg_open_file_fn)fn)(path, out, out_len);
 }
 
 // The file the dynamic linker mapped the code at addr from, or NULL if it doesn't know the address.
@@ -50,7 +55,8 @@ type dlLibrary struct {
 	unwrap          unsafe.Pointer
 	generateAndWrap unsafe.Pointer
 	harden          unsafe.Pointer // nil when the library has no hardening call
-	descriptions    map[int32]string
+	openFileFn      unsafe.Pointer // nil when the library predates hkdfguard_open_file
+	describe        func(int32) string
 }
 
 // dlOpen maps the library at an absolute path, resolving every symbol now.
@@ -94,9 +100,14 @@ func dlImagePath(address unsafe.Pointer) string {
 }
 
 // bindDL resolves the KMS exports of an opened, verified library. Every platform's library has the
-// three DEK calls; hardenSymbol may be "" when the platform has no hardening call.
-func bindDL(handle unsafe.Pointer, hardenSymbol string, descriptions map[int32]string) (*dlLibrary, error) {
-	library := &dlLibrary{handle: handle, descriptions: descriptions}
+// three DEK calls; hardenSymbol may be "" when the platform has no hardening call. describe is the
+// platform's status descriptions.
+//
+// hkdfguard_open_file is bound when present. It is not required here, so a release that predates
+// it still wraps and unwraps; reading a key file through such a release fails (openFile), rather
+// than falling back to a read without the native library's checks.
+func bindDL(handle unsafe.Pointer, hardenSymbol string, describe func(int32) string) (*dlLibrary, error) {
+	library := &dlLibrary{handle: handle, describe: describe}
 	for _, export := range []struct {
 		name   string
 		target *unsafe.Pointer
@@ -114,6 +125,7 @@ func bindDL(handle unsafe.Pointer, hardenSymbol string, descriptions map[int32]s
 			return nil, untrusted("The native library has no '%s' export; it is not the HkdfGuard native library.", hardenSymbol)
 		}
 	}
+	library.openFileFn = dlSym(handle, "hkdfguard_open_file")
 	return library, nil
 }
 
@@ -155,7 +167,21 @@ func (l *dlLibrary) generateAndWrapDEK(service string, out []byte) (int32, int32
 	return int32(status), int32(outLen)
 }
 
-func (l *dlLibrary) describeStatus(status int32) string { return l.descriptions[status] }
+// openFile is hkdfguard_open_file(const char* path, uint8_t* out, int* out_len).
+func (l *dlLibrary) openFile(path string, out []byte) (int32, int32, error) {
+	if l.openFileFn == nil {
+		return 0, 0, unsupported("The installed HkdfGuard native KMS library has no 'hkdfguard_open_file' export, so it can't read key files; install a current release.")
+	}
+	cpath := C.CString(path)
+	defer C.free(unsafe.Pointer(cpath))
+
+	outLen := C.int32_t(len(out))
+	status := C.hg_call_open_file(l.openFileFn, cpath, bytePointer(out), &outLen)
+	runtime.KeepAlive(out)
+	return int32(status), int32(outLen), nil
+}
+
+func (l *dlLibrary) describeStatus(status int32) string { return l.describe(status) }
 
 func (l *dlLibrary) hardenProcess() (int32, error) {
 	if l.harden == nil {
