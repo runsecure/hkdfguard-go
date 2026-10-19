@@ -25,7 +25,9 @@ type fakeLibrary struct {
 	generateCalls, hardenCalls  int
 
 	describe func(int32) string
-	harden   func() int32 // nil: no hardening call on this platform
+	harden   func() int32 // nil: hardening succeeds
+
+	lastHardenFlags *uint32 // the flags of the last hardenProcess call
 
 	openFileStatus  int32
 	openFilePayload []byte
@@ -104,12 +106,13 @@ func (f *fakeLibrary) openFile(path string, out []byte) (int32, int32, error) {
 	return statusOK, n, nil
 }
 
-func (f *fakeLibrary) hardenProcess() (int32, error) {
+func (f *fakeLibrary) hardenProcess(flags uint32) int32 {
 	f.hardenCalls++
+	f.lastHardenFlags = &flags
 	if f.harden == nil {
-		return 0, errNoHardening
+		return statusOK
 	}
-	return f.harden(), nil
+	return f.harden()
 }
 
 func mustWrapper(t *testing.T, service string, library kmsLibrary) *KeyWrapper {
@@ -322,43 +325,5 @@ func TestAnInvalidServiceName_IsRejectedBeforeAnyNativeCall(t *testing.T) {
 		if calls := library.wrapCalls + library.unwrapCalls + library.generateCalls; calls != 0 {
 			t.Errorf("%q: library called %d times", name, calls)
 		}
-	}
-}
-
-func TestHardenProcess_SucceedsWhenTheLibraryReportsOK(t *testing.T) {
-	library := &fakeLibrary{harden: func() int32 { return statusOK }}
-
-	if err := hardenProcess(library); err != nil || library.hardenCalls != 1 {
-		t.Errorf("hardenProcess = %v after %d calls", err, library.hardenCalls)
-	}
-}
-
-func TestHardenProcess_FailureNamesTheStatusAndItsMeaning(t *testing.T) {
-	library := &fakeLibrary{
-		harden:   func() int32 { return errProcessHardeningFailed },
-		describe: func(int32) string { return "could not disable core dumps" },
-	}
-
-	err := hardenProcess(library)
-
-	want := "Native process hardening failed with status -20 (could not disable core dumps)."
-	if err == nil || err.Error() != want {
-		t.Errorf("error = %v, want %q", err, want)
-	}
-}
-
-func TestHardenProcess_WithAnUnknownStatus_GivesJustTheStatus(t *testing.T) {
-	err := hardenProcess(&fakeLibrary{harden: func() int32 { return -150 }})
-
-	if err == nil || !strings.HasSuffix(err.Error(), "status -150.") {
-		t.Errorf("error = %v", err)
-	}
-}
-
-func TestHardenProcess_OnAPlatformWithoutIt_IsUnsupported(t *testing.T) {
-	err := hardenProcess(&fakeLibrary{})
-
-	if !errors.Is(err, ErrUnsupportedPlatform) || !strings.Contains(err.Error(), "Linux") {
-		t.Errorf("error = %v", err)
 	}
 }

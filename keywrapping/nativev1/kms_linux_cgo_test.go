@@ -35,9 +35,6 @@ import (
 const (
 	linuxPolicyPath = "/etc/hkdfguard/policy.toml"
 	linuxCLI        = "/usr/bin/hkdfguard"
-
-	// processHardeningVariable opts in to the test that hardens this very test process.
-	processHardeningVariable = "HKDFGUARD_TEST_PROCESS_HARDENING"
 )
 
 // platformTestEnvironment: the Linux library has no non-prompting way to ask whether a KEK exists

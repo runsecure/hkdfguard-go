@@ -140,6 +140,53 @@ files are `%ProgramFiles%\HkdfGuard\v1\HkdfGuard.dll` and `hkdfguard.exe` on Win
 `libhkdfguard.so.1` and `/usr/bin/hkdfguard` on Linux, and `libhkdfguard_v1.dylib` and
 `hkdfguard-v1-initialize` on macOS.
 
+#### Process hardening
+
+DEKs pass through your process's memory, so a crash dump, or another process of the same user
+attaching a debugger or reading that memory, could recover them. `nativev1.HardenProcess()` calls
+the native library's `hkdfguard_harden_process_with_flags` to close that off, on every platform:
+
+| Platform | What it does |
+|---|---|
+| Windows | Crash reports leave out the heap, and the process's and its threads' access lists are replaced so only SYSTEM can read or write its memory, inject threads or duplicate its handles. Its own account keeps only query, synchronize and terminate. |
+| Linux | Core dumps off (hard limit included), and the process marked non-dumpable, which also stops ptrace and `/proc/<pid>/mem` access by the same user. |
+| macOS | Core dumps off and debugger attachment denied. Whether code can be injected depends on the host executable's code signature, which the library checks but can't change. |
+
+Neither the native library nor any machine policy does this for you: it changes process-wide
+state your application owns, so it is opt-in. Call it once, early in startup - the first thing in
+`main` on Windows, and after any privilege drop on Linux:
+
+```go
+if err := nativev1.HardenProcess(); err != nil {
+    log.Fatal(err) // a *nativev1.StatusError if the hardening failed: don't start
+}
+```
+
+Debuggers, crash dumps and core dumps stop working for the process. It is a same-user barrier: it
+does not stop administrators, root, SYSTEM, `SeDebugPrivilege`, `CAP_SYS_PTRACE` or the kernel,
+and it does not keep memory out of swap, the page file or hibernation files.
+
+`nativev1.HardenProcessWithOptions(nativev1.RequireProtectedSignature)` is the strict form the
+native command-line tools use: it fails unless no other process of the same user can debug or
+inject into this one. `HardenProcessOptions` is a bitmask; a bit this package doesn't define is
+refused before any native call.
+
+- **Windows:** it also closes threads started later, and everything else the process creates
+  afterwards without its own security descriptor (child processes, named pipes, named events), to
+  its own account. Use it in a service that shares no objects with other processes by name.
+- **macOS:** it fails unless the host executable is signed with the Hardened Runtime and without
+  the `get-task-allow` or `DYLD_*` entitlements, so unsigned or ad-hoc signed binaries (`go run`,
+  `go test`, a plain `go build`) can't use it. Without it, a weak signature is only logged.
+- **Linux:** it adds nothing; the plain call already guarantees it.
+
+**Go on Windows:** the plain call closes the threads that exist when it runs, and threads started
+later keep the default access, which lets other processes of the same user read and change their
+registers. A Go program can't call it "before starting threads": the runtime starts OS threads
+before `main` (even before `init` functions run), and keeps starting more whenever it needs them -
+a goroutine blocked in a system call, more runnable goroutines, the garbage collector. Calling it
+first thing in `main` covers the threads that exist then, not the ones the runtime adds later, so
+**use `RequireProtectedSignature` for a Windows service**: it closes later threads too.
+
 It is its own module (`github.com/runsecure/hkdfguard-go/keywrapping/nativev1`) because macOS and
 Linux builds need cgo (`CGO_ENABLED=1` and a C toolchain); Windows needs neither. See
 [Testing](#testing) for its native integration tests.
@@ -186,8 +233,17 @@ cd integration && CGO_ENABLED=1 go test ./...            # end to end across the
 With a service, the Linux run also checks the exact Linux status codes, the native library's own
 service-name and length checks, that a failed unwrap zeroes the caller's buffer, that tampering
 anywhere in a payload is refused, and that a key file written by `hkdfguard wrap`
-unwraps through the wrapper; `HKDFGUARD_TEST_PROCESS_HARDENING=1` adds the test that hardens the
-test process itself (`HardenProcess`).
+unwraps through the wrapper.
+
+`HKDFGUARD_TEST_PROCESS_HARDENING=1` adds the tests that harden the test process itself, on Linux
+(the dumpable flag and core dump limit) and Windows (the process is no longer open to its own
+account for memory reads; in strict mode neither are threads started afterwards). Run each in a
+test binary of its own, since what one does to the process outlives it:
+
+```sh
+HKDFGUARD_TEST_PROCESS_HARDENING=1 go test -run 'HardenProcess_ClosesTheProcessToItsOwnAccount$|DisablesCoreDumps' -v
+HKDFGUARD_TEST_PROCESS_HARDENING=1 go test -run 'HardenProcess_WithRequireProtectedSignature' -v   # Windows
+```
 
 **macOS:** in the native library's legacy keychain mode the KEK's access list names the binary
 that created it, so the first native call from each freshly built test binary is answered with a

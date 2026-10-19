@@ -58,6 +58,7 @@ func winLoad(path, expectedPublisher string) (kmsLibrary, error) {
 		{"hkdfguard_unwrap_dek", &library.unwrap},
 		{"hkdfguard_generate_and_wrap_dek", &library.generateAndWrap},
 		{"hkdfguard_open_file", &library.openFileProc},
+		{"hkdfguard_harden_process_with_flags", &library.hardenProc},
 	} {
 		address, err := windows.GetProcAddress(handle, export.name)
 		if err != nil {
@@ -339,6 +340,7 @@ type winLibrary struct {
 	handle                        windows.Handle
 	wrap, unwrap, generateAndWrap uintptr
 	openFileProc                  uintptr
+	hardenProc                    uintptr
 }
 
 func (l *winLibrary) wrapDEK(service string, dek, out []byte) (int32, int32) {
@@ -394,4 +396,8 @@ func (l *winLibrary) openFile(path string, out []byte) (int32, int32, error) {
 
 func (l *winLibrary) describeStatus(status int32) string { return describeWindowsStatus(status) }
 
-func (l *winLibrary) hardenProcess() (int32, error) { return 0, errNoHardening }
+// hardenProcess is hkdfguard_harden_process_with_flags(unsigned int flags).
+func (l *winLibrary) hardenProcess(flags uint32) int32 {
+	status, _, _ := syscall.SyscallN(l.hardenProc, uintptr(flags))
+	return int32(status)
+}

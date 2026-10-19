@@ -143,6 +143,9 @@ func TestPlatformHints_SayWhatToDoThere(t *testing.T) {
 		{"darwin", errKEKAccessDenied, []string{"keychain"}},
 		{"darwin", errProviderUnavailable, []string{"Secure Enclave"}},
 		{"darwin", errKEKNotFound, []string{"hkdfguard-v1-initialize provision"}},
+		{"windows", errProcessHardeningFailed, []string{"access lists", "RequireProtectedSignature"}},
+		{"linux", errProcessHardeningFailed, []string{"ptrace"}},
+		{"darwin", errProcessHardeningFailed, []string{"Hardened Runtime", "get-task-allow", "RequireProtectedSignature"}},
 		{"shared", errFilePlaintextKey, []string{"UNWRAPPED", "key exposure"}},
 		{"shared", errKEKNotFound, []string{"hkdfguard provision"}},
 	}

@@ -34,6 +34,13 @@
 // Every platform's library returns the same status codes (the native header's HKDFGUARD_ERR_*
 // table); a *StatusError or *KeyFileError carries the code and what it means on this platform.
 //
+// HardenProcess and HardenProcessWithOptions are opt-in hardening of the whole process through the
+// native library - no crash dumps of its memory, and no debugger attach or memory reads by other
+// processes of the same user - on Windows, Linux and macOS. Neither the native library nor any
+// machine policy does it on its own; call it early in main. On Windows use the
+// RequireProtectedSignature option in a service: the Go runtime starts OS threads before main and
+// keeps starting more, and only the strict form closes threads started after the call.
+//
 // No call here creates a KEK: a service must be provisioned first with
 // hkdfguard provision --service-name <name> (the tool is %ProgramFiles%\HkdfGuard\v1\hkdfguard.exe
 // on Windows and /usr/bin/hkdfguard on Linux; on macOS it keeps the name hkdfguard-v1-initialize).

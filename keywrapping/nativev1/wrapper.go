@@ -39,9 +39,9 @@ type kmsLibrary interface {
 	// describeStatus is what a non-zero status means on this platform, or "" if unknown.
 	describeStatus(status int32) string
 
-	// hardenProcess applies process hardening, or returns an error wrapping
-	// ErrUnsupportedPlatform when this platform's library has no such call.
-	hardenProcess() (int32, error)
+	// hardenProcess is hkdfguard_harden_process_with_flags(flags): process hardening, with flags a
+	// bitwise OR of the HKDFGUARD_HARDEN_* flags. Every platform's library has it.
+	hardenProcess(flags uint32) int32
 }
 
 // KeyWrapper protects (Wrap) a DEK, or reveals (Unwrap) a previously-wrapped one, through the
@@ -200,37 +200,4 @@ func (w *KeyWrapper) complete(op string, status, written int32, result []byte) (
 		return 0, fmt.Errorf("nativev1: native KMS %s for service '%s' reported %d bytes written into a %d-byte buffer", op, w.service, written, len(result))
 	}
 	return int(written), nil
-}
-
-// HardenProcess hardens the whole process through the native KMS library, loading it if it isn't
-// already. DEKs pass through this process's memory, so a core dump, or another process of the
-// same user attaching a debugger or reading /proc/<pid>/mem, could recover them. On Linux it sets
-// the core dump limit to zero (hard limit included) and clears the process's dumpable flag.
-//
-// It is opt-in because it is process-wide: debuggers and crash dumps stop working for the
-// application. Call it once, early, and after any privilege drop - the kernel resets the dumpable
-// flag when a process's credentials change. It does not stop root or a process with
-// CAP_SYS_PTRACE, and it does not keep memory out of swap; those are host settings (no swap or
-// encrypted swap, kernel.yama.ptrace_scope of 2 or 3, and for a systemd service LimitCORE=0 and
-// ProtectProc=invisible).
-//
-// It returns an error wrapping ErrUnsupportedPlatform off Linux, and a *StatusError if the
-// hardening failed - treat that as a reason not to start.
-func HardenProcess() error {
-	library, err := hostLibrary()
-	if err != nil {
-		return err
-	}
-	return hardenProcess(library)
-}
-
-func hardenProcess(library kmsLibrary) error {
-	status, err := library.hardenProcess()
-	if err != nil {
-		return err
-	}
-	if status != statusOK {
-		return &StatusError{Op: "process hardening", Status: status, Description: library.describeStatus(status)}
-	}
-	return nil
 }

@@ -11,7 +11,7 @@ package nativev1
 
 typedef int32_t (*hg_wrap_fn)(const char*, const uint8_t*, int32_t, uint8_t*, int32_t*);
 typedef int32_t (*hg_generate_fn)(const char*, uint8_t*, int32_t*);
-typedef int32_t (*hg_harden_fn)(void);
+typedef int32_t (*hg_harden_fn)(unsigned int);
 typedef int32_t (*hg_open_file_fn)(const char*, uint8_t*, int32_t*);
 
 // The native functions are reached through dlsym'd pointers, so cgo needs these trampolines to
@@ -24,8 +24,8 @@ static int32_t hg_call_generate(void* fn, const char* service, uint8_t* out, int
 	return ((hg_generate_fn)fn)(service, out, out_len);
 }
 
-static int32_t hg_call_harden(void* fn) {
-	return ((hg_harden_fn)fn)();
+static int32_t hg_call_harden(void* fn, unsigned int flags) {
+	return ((hg_harden_fn)fn)(flags);
 }
 
 static int32_t hg_call_open_file(void* fn, const char* path, uint8_t* out, int32_t* out_len) {
@@ -54,7 +54,7 @@ type dlLibrary struct {
 	wrap            unsafe.Pointer
 	unwrap          unsafe.Pointer
 	generateAndWrap unsafe.Pointer
-	harden          unsafe.Pointer // nil when the library has no hardening call
+	harden          unsafe.Pointer // hkdfguard_harden_process_with_flags
 	openFileFn      unsafe.Pointer // nil when the library predates hkdfguard_open_file
 	describe        func(int32) string
 }
@@ -100,13 +100,13 @@ func dlImagePath(address unsafe.Pointer) string {
 }
 
 // bindDL resolves the KMS exports of an opened, verified library. Every platform's library has the
-// three DEK calls; hardenSymbol may be "" when the platform has no hardening call. describe is the
-// platform's status descriptions.
+// three DEK calls and hkdfguard_harden_process_with_flags. describe is the platform's status
+// descriptions.
 //
 // hkdfguard_open_file is bound when present. It is not required here, so a release that predates
 // it still wraps and unwraps; reading a key file through such a release fails (openFile), rather
 // than falling back to a read without the native library's checks.
-func bindDL(handle unsafe.Pointer, hardenSymbol string, describe func(int32) string) (*dlLibrary, error) {
+func bindDL(handle unsafe.Pointer, describe func(int32) string) (*dlLibrary, error) {
 	library := &dlLibrary{handle: handle, describe: describe}
 	for _, export := range []struct {
 		name   string
@@ -115,14 +115,10 @@ func bindDL(handle unsafe.Pointer, hardenSymbol string, describe func(int32) str
 		{"hkdfguard_wrap_dek", &library.wrap},
 		{"hkdfguard_unwrap_dek", &library.unwrap},
 		{"hkdfguard_generate_and_wrap_dek", &library.generateAndWrap},
+		{"hkdfguard_harden_process_with_flags", &library.harden},
 	} {
 		if *export.target = dlSym(handle, export.name); *export.target == nil {
 			return nil, untrusted("The native library has no '%s' export; it is not the HkdfGuard native library.", export.name)
-		}
-	}
-	if hardenSymbol != "" {
-		if library.harden = dlSym(handle, hardenSymbol); library.harden == nil {
-			return nil, untrusted("The native library has no '%s' export; it is not the HkdfGuard native library.", hardenSymbol)
 		}
 	}
 	library.openFileFn = dlSym(handle, "hkdfguard_open_file")
@@ -183,9 +179,7 @@ func (l *dlLibrary) openFile(path string, out []byte) (int32, int32, error) {
 
 func (l *dlLibrary) describeStatus(status int32) string { return l.describe(status) }
 
-func (l *dlLibrary) hardenProcess() (int32, error) {
-	if l.harden == nil {
-		return 0, errNoHardening
-	}
-	return int32(C.hg_call_harden(l.harden)), nil
+// hardenProcess is hkdfguard_harden_process_with_flags(unsigned int flags).
+func (l *dlLibrary) hardenProcess(flags uint32) int32 {
+	return int32(C.hg_call_harden(l.harden, C.uint(flags)))
 }
