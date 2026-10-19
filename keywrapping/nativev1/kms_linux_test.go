@@ -129,3 +129,17 @@ func TestLinuxSystem_TheInstalledLibrary_IsAKnownReleaseInATrustedLocation(t *te
 		t.Errorf("content: %v", err)
 	}
 }
+
+func TestLinuxSystem_TheInstalledLibrary_NeedsTPM2TSSAndLibc(t *testing.T) {
+	path := installedLinuxLibraryPath(t)
+
+	needed, err := elfReadNeededFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"libtss2-esys.so.0", "libc.so.6"} {
+		if !slices.Contains(needed, want) {
+			t.Errorf("DT_NEEDED = %v; want %s among them", needed, want)
+		}
+	}
+}

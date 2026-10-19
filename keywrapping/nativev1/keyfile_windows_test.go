@@ -105,6 +105,20 @@ func wrapToFile(t *testing.T, w *KeyWrapper, directory string) (path string, wra
 	return writeKeyFileIn(t, directory, "wrapped-dek.bin", wrapped), wrapped, dekBytes
 }
 
+func TestWindowsKeyFile_TheKeyFileFolder_IsInItsLongForm(t *testing.T) {
+	// hkdfguard_open_file refuses an 8.3 short name anywhere in a path, so every test here relies
+	// on keyFileDirectory expanding one (C:\Users\RUNNER~1\... on GitHub-hosted runners).
+	keyFileReader(t)
+
+	directory := keyFileDirectory(t)
+
+	for _, part := range strings.Split(directory, string(filepath.Separator)) {
+		if i := strings.IndexByte(part, '~'); i >= 0 && i+1 < len(part) && part[i+1] >= '0' && part[i+1] <= '9' {
+			t.Errorf("%s still has the short name %q", directory, part)
+		}
+	}
+}
+
 // --- A real key file ----------------------------------------------------------------------------
 
 func TestWindowsKeyFile_AKeyFileTheWrapperWrote_ReadsBackStillWrapped_AndUnwrapsToItsDEK(t *testing.T) {

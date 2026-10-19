@@ -209,6 +209,20 @@ scripts/check.sh                       # every module
 scripts/check.sh keywrapping/nativev1  # one module
 ```
 
+### Platform native integration suites
+
+Each platform has its own suite against the real native library, alongside the cross-platform
+round trips in `keywrapping/nativev1/native_test.go` and the end-to-end tests in `integration`. All
+of them skip (with the reason) rather than pass where what they need is missing:
+
+| Platform | Files | Gated on |
+|---|---|---|
+| Linux | `kms_linux_test.go`, `kms_linux_cgo_test.go` (`TestLinuxSystem_*`, `TestLinuxNative_*`) | `linux`, and `cgo` for the dynamic-linker checks and native calls. The loader's system checks run on any Linux host (libc stands in for the library); installed-library checks skip without the `libhkdfguard1` package (and one checks that, without it, loading reports it not installed); the native contract needs `HKDFGUARD_TEST_SERVICE` (and `HKDFGUARD_TEST_SERVICE_OTHER`) |
+| macOS | `kms_darwin_test.go` (`TestDarwin_*`) | `darwin && cgo`; skips without the installed library or the provisioning tool, and the round trips without the provisioned test service |
+| Windows | `kms_windows_test.go` (`TestWindows_*`), `keyfile_windows_test.go` (`TestWindowsKeyFile_*`), `harden_windows_test.go` (`TestWindowsNative_*`) | `windows`; the loader's refusals of planted, unsigned, junctioned and non-PE files always run; installed-library checks skip without `%ProgramFiles%\HkdfGuard\v1\HkdfGuard.dll`; key-file refusals need only the library; real key files and round trips need the provisioned test KEK |
+
+The process-hardening tests (Linux and Windows) also need `HKDFGUARD_TEST_PROCESS_HARDENING=1` (below).
+
 The native key wrapper's tests make real calls against a provisioned service. They are reported
 as skipped, never passed, unless the test service exists: on Windows and macOS the tests find it
 by themselves (through the library's `hkdfguard_kek_exists` export, and the provisioning tool's

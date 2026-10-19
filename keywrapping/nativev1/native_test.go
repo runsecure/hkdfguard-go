@@ -188,6 +188,15 @@ func TestTheInstalledLibrary_AnswersOpenFile_WithADescribedRefusal(t *testing.T)
 	}
 }
 
+func TestTheInstalledLibrary_IsThisPlatformsBinding(t *testing.T) {
+	library := installedLibrary(t)
+
+	want := map[string]string{"windows": "*nativev1.winLibrary", "linux": "*nativev1.dlLibrary", "darwin": "*nativev1.dlLibrary"}[runtime.GOOS]
+	if got := fmt.Sprintf("%T", library); got != want {
+		t.Errorf("the host library on %s is a %s, want %s", runtime.GOOS, got, want)
+	}
+}
+
 func TestNative_WrapAndUnwrap_RoundTripsA32ByteDEK(t *testing.T) {
 	w := provisionedWrapper(t)
 	ctx := context.Background()
@@ -333,5 +342,39 @@ func TestNative_TooSmallBuffersAndCorruptPayloads_Fail(t *testing.T) {
 	destination := make([]byte, DEKLength)
 	if _, err := w.Unwrap(ctx, wrapped[:n], destination); err == nil || !hkdfguard.IsZero(destination) {
 		t.Errorf("Unwrap of a corrupted payload: error = %v, destination zeroed = %v", err, hkdfguard.IsZero(destination))
+	}
+}
+
+func TestNative_TheLibraryDirectly_RefusesTooSmallBuffersAndCorruptPayloads(t *testing.T) {
+	// The binding's own answers, without the KeyWrapper's checks and zeroing in between.
+	w := provisionedWrapper(t)
+	library := w.library
+
+	status, required := library.wrapDEK(w.service, randomDEK(t), make([]byte, 1))
+	if status >= 0 || required <= 1 {
+		t.Errorf("wrapDEK into 1 byte = %d, %d; want an error status and the capacity it needs", status, required)
+	}
+	if status, _ := library.generateAndWrapDEK(w.service, make([]byte, 1)); status >= 0 {
+		t.Errorf("generateAndWrapDEK into 1 byte = %d; want an error status", status)
+	}
+
+	wrapped := make([]byte, hkdfguard.MaxWrappedKeyBytes)
+	status, written := library.wrapDEK(w.service, randomDEK(t), wrapped)
+	if status != statusOK || written <= 0 {
+		t.Fatalf("wrapDEK = %d, %d", status, written)
+	}
+	payload := wrapped[:written]
+	if status, _ := library.unwrapDEK(w.service, payload, make([]byte, 1)); status >= 0 {
+		t.Errorf("unwrapDEK into 1 byte = %d; want an error status", status)
+	}
+
+	payload[0] ^= 0xFF
+	payload[len(payload)/2] ^= 0xFF
+	recovered := make([]byte, DEKLength)
+	if status, _ := library.unwrapDEK(w.service, payload, recovered); status >= 0 {
+		t.Errorf("unwrapDEK of a corrupted payload = %d; want an error status", status)
+	}
+	if !hkdfguard.IsZero(recovered) {
+		t.Error("the native library wrote into the destination of a failed unwrap")
 	}
 }

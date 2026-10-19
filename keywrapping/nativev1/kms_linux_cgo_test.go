@@ -6,10 +6,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -62,6 +65,71 @@ func TestLinuxSystem_ThisProcesssLibc_IsLoadedFromATrustedFile(t *testing.T) {
 func TestLinuxSystem_ANameNothingIsLoadedUnder_HasNoLoadedPath(t *testing.T) {
 	if path, ok := linuxLoadedPath("libhkdfguard-never-loaded.so.0"); ok {
 		t.Errorf("got %q", path)
+	}
+}
+
+func TestLinuxSystem_ThisProcesssLibc_PassesTheLoadedImageAndDependencyChecks(t *testing.T) {
+	// The post-load checks (dladdr, DT_NEEDED parsing, dlopen(RTLD_NOLOAD) + dlinfo, the path
+	// checks) against a real loaded library, so they run on any Linux host, package or not.
+	loaded, ok := linuxLoadedPath("libc.so.6")
+	if !ok {
+		t.Fatal("libc.so.6 is not loaded")
+	}
+	libc, err := linuxTrustedFile(loaded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handle, err := dlOpen(libc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { dlClose(handle) })
+
+	// dladdr places a libc export in libc.
+	image := dlImagePath(dlSym(handle, "getpid"))
+	if image == "" {
+		t.Fatal("dladdr does not know getpid")
+	}
+	resolved, err := linuxTrustedFile(image)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := linuxVerifyLoadedImage(libc, resolved); err != nil {
+		t.Errorf("loaded image: %v", err)
+	}
+	if dlImagePath(nil) != "" {
+		t.Error("dladdr placed a nil address")
+	}
+
+	needed, err := elfReadNeededFile(libc)
+	if err != nil || !slices.ContainsFunc(needed, func(name string) bool { return strings.HasPrefix(name, "ld-linux") }) {
+		t.Errorf("DT_NEEDED of %s = %v, %v; want the dynamic linker among them", libc, needed, err)
+	}
+	if err := linuxVerifyDependencies(libc, elfReadNeededFile, linuxLoadedPath, linuxTrustedFile); err != nil {
+		t.Errorf("dependencies: %v", err)
+	}
+}
+
+func TestLinuxSystem_WithoutThePackage_LoadingReportsItIsNotInstalled(t *testing.T) {
+	// Where the package is absent, the real loader must say so, naming the package, rather than
+	// fall back to any search.
+	candidates, err := linuxCandidatePaths(runtime.GOARCH)
+	if err != nil {
+		t.Skipf("no package for this architecture: %v", err)
+	}
+	for _, candidate := range candidates {
+		if linuxProbe(candidate) == 0 {
+			t.Skip("the libhkdfguard1 package is installed")
+		}
+	}
+
+	library, err := loadPlatformLibrary()
+
+	if library != nil || !errors.Is(err, ErrNotInstalled) || !strings.Contains(err.Error(), "libhkdfguard1") {
+		t.Errorf("loadPlatformLibrary = %v, %v; want ErrNotInstalled naming libhkdfguard1", library, err)
+	}
+	if _, err := New("hkdfguard.loadertest.unprovisioned"); !errors.Is(err, ErrNotInstalled) {
+		t.Errorf("New = %v; want ErrNotInstalled", err)
 	}
 }
 

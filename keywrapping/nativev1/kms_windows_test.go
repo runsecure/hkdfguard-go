@@ -203,6 +203,70 @@ func TestWindows_TheInstalledProvisioningTool_PassesTheSignerChecks_ButIsRefused
 	requireUntrusted(t, winVerifyImageKindOf(tool), "not a DLL")
 }
 
+// winModulePath is the file Windows mapped a loaded module from.
+func winModulePath(t *testing.T, handle windows.Handle) string {
+	t.Helper()
+	buffer := make([]uint16, windows.MAX_LONG_PATH)
+	n, err := windows.GetModuleFileName(handle, &buffer[0], uint32(len(buffer)))
+	if err != nil || n == 0 {
+		t.Fatalf("GetModuleFileName = %d, %v", n, err)
+	}
+	return windows.UTF16ToString(buffer[:n])
+}
+
+func TestWindows_TheInstalledPath_IsTheFixedProgramFilesLocation(t *testing.T) {
+	// Worked out independently of the loader: %ProgramFiles%\HkdfGuard\v1\HkdfGuard.dll.
+	programFiles := os.Getenv("ProgramFiles")
+	if programFiles == "" {
+		t.Fatal("%ProgramFiles% is not set")
+	}
+	expected := filepath.Join(programFiles, "HkdfGuard", "v1", "HkdfGuard.dll")
+
+	library, err := loadPlatformLibrary()
+
+	if errors.Is(err, ErrNotInstalled) {
+		// Nothing there: the refusal names the one location it would have loaded from.
+		if !strings.Contains(strings.ToLower(err.Error()), strings.ToLower(expected)) {
+			t.Errorf("error = %v; want it to name %s", err, expected)
+		}
+		return
+	}
+	if err != nil {
+		t.Fatalf("the installed native library failed to load: %v", err)
+	}
+	win, ok := library.(*winLibrary)
+	if !ok {
+		t.Fatalf("loaded library is a %T", library)
+	}
+	if loaded := winModulePath(t, win.handle); !strings.EqualFold(loaded, expected) {
+		t.Errorf("Windows mapped %s; want %s", loaded, expected)
+	}
+}
+
+func TestWindows_LoadingTheInstalledLibraryAgain_ReturnsTheSameHandle(t *testing.T) {
+	path := installedWindowsLibraryPath(t)
+
+	first, err := winLoad(path, winExpectedPublisher)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = windows.FreeLibrary(first.(*winLibrary).handle) })
+	second, err := winLoad(path, winExpectedPublisher)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = windows.FreeLibrary(second.(*winLibrary).handle) })
+
+	firstHandle, secondHandle := first.(*winLibrary).handle, second.(*winLibrary).handle
+	if firstHandle == 0 || firstHandle != secondHandle {
+		t.Errorf("handles = %#x, %#x; want the same module", firstHandle, secondHandle)
+	}
+	// And the same module the process-wide binding uses.
+	if host, ok := installedLibrary(t).(*winLibrary); !ok || host.handle != firstHandle {
+		t.Errorf("the host library is not the module winLoad returned")
+	}
+}
+
 func TestWindows_KEKExists_AnswersForAnUnprovisionedService(t *testing.T) {
 	installedWindowsLibraryPath(t)
 
