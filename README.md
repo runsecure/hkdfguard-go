@@ -233,7 +233,9 @@ library: its refusals need no KEK, and reading back a real key file uses the tes
 
 - Linux: `sudo scripts/provision-linux-test-key.sh` (TPM-backed test KEKs and policy; `--remove` undoes it)
 - macOS: `scripts/provision-macos-test-key.sh` as the account that runs the tests (`--remove` retires the KEK)
-- Windows: `./scripts/provision-windows-test-key.ps1` from an elevated PowerShell
+- Windows: `./scripts/provision-windows-test-key.ps1` from an elevated PowerShell (`-Remove` retires
+  the KEK; a provisioning run also retires the legacy `com.hkdfguard.native.windows.test`, after
+  asking - `-KeepLegacyKey` keeps it)
 
 Each checks the installed `hkdfguard` tool (`hkdfguard-v1-initialize` on macOS) against the same pins the loader applies before
 running it, and prints the `go test` command to run next. They provision the same KEKs as the .NET

@@ -55,7 +55,7 @@ func TestTheProvisioningScripts_UseTheServicesTheTestsDocument(t *testing.T) {
 	scripts := map[string]struct{ file, pattern string }{
 		"linux":   {"scripts/provision-linux-test-key.sh", `(?m)^readonly SERVICE="%s"$`},
 		"darwin":  {"scripts/provision-macos-test-key.sh", `(?m)^readonly SERVICE="%s"$`},
-		"windows": {"scripts/provision-windows-test-key.ps1", `(?m)^    \[string\] \$ServiceName = '%s'$`},
+		"windows": {"scripts/provision-windows-test-key.ps1", `(?m)^    \[string\] \$ServiceName = '%s',?$`},
 	}
 	for goos, script := range scripts {
 		contents, err := os.ReadFile(script.file)
