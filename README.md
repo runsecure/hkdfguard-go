@@ -231,7 +231,7 @@ by themselves (through the library's `hkdfguard_kek_exists` export, and the prov
 tests. On Windows the key-file tests (`keyfile_windows_test.go`) also run against the installed
 library: its refusals need no KEK, and reading back a real key file uses the test service. To provision a test host, run from `keywrapping/nativev1`:
 
-- Linux: `sudo scripts/provision-linux-test-key.sh` (TPM-backed test KEKs and policy; `--remove` undoes it)
+- Linux: `sudo scripts/provision-linux-test-key.sh` (the TPM-backed test KEK and policy; `--remove` undoes it)
 - macOS: `scripts/provision-macos-test-key.sh` as the account that runs the tests (`--remove` retires the KEK)
 - Windows: `./scripts/provision-windows-test-key.ps1` from an elevated PowerShell (`-Remove` retires
   the KEK; a provisioning run also retires the legacy `com.hkdfguard.native.windows.test`, after

@@ -69,11 +69,13 @@ func TestTheProvisioningScripts_UseTheServicesTheTestsDocument(t *testing.T) {
 	}
 
 	linux, _ := os.ReadFile("scripts/provision-linux-test-key.sh")
-	if !regexp.MustCompile(`(?m)^readonly OTHER_SERVICE="\$\{SERVICE\}\.other"$`).Match(linux) {
-		t.Error("the Linux script's second test service changed")
+	// One test service only: the isolation tests use a never-provisioned name unless
+	// HKDFGUARD_TEST_SERVICE_OTHER names a second real KEK.
+	if regexp.MustCompile(`(?m)^readonly OTHER_SERVICE=`).Match(linux) {
+		t.Error("the Linux script provisions a second test service again")
 	}
 
-	for _, name := range []string{defaultTestService, defaultTestService + ".other", unprovisionedServiceName} {
+	for _, name := range []string{defaultTestService, unprovisionedServiceName} {
 		if !hkdfguard.IsValidServiceName(name) {
 			t.Errorf("%q is not a valid service name", name)
 		}
