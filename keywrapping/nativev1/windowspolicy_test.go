@@ -187,7 +187,7 @@ func TestWinADLLForThisProcessArchitecture_Passes(t *testing.T) {
 }
 
 func TestWinAnExecutable_IsRefused(t *testing.T) {
-	// e.g. hkdfguard-v1-initialize.exe renamed into place: signed by the same profile.
+	// e.g. hkdfguard.exe renamed into place: signed by the same profile.
 	requireUntrusted(t, winVerifyImageKind("test", 0x0002, peMachineAMD64, "amd64"), "not a DLL")
 }
 

@@ -3,7 +3,9 @@ package nativev1
 import (
 	"context"
 	"fmt"
+	"io/fs"
 	"math"
+	"strings"
 
 	"github.com/runsecure/hkdfguard-go"
 )
@@ -15,8 +17,8 @@ const DEKLength = 32
 const statusOK = 0
 
 // kmsLibrary is one platform's native HkdfGuard KMS library: hkdfguard_wrap_dek,
-// hkdfguard_unwrap_dek and hkdfguard_generate_and_wrap_dek, identical in shape across platforms,
-// though each library's negative status codes mean different things.
+// hkdfguard_unwrap_dek, hkdfguard_generate_and_wrap_dek and hkdfguard_open_file, identical in shape
+// across platforms, as are their status codes (status.go).
 type kmsLibrary interface {
 	// wrapDEK wraps dek under service's KEK into out. On success written is the payload length;
 	// on a buffer-too-small failure, the required capacity.
@@ -29,12 +31,17 @@ type kmsLibrary interface {
 	// crosses this boundary.
 	generateAndWrapDEK(service string, out []byte) (status, written int32)
 
+	// openFile reads the key file at path into out through hkdfguard_open_file, without unwrapping
+	// it. On success read is the number of bytes read. err wraps ErrUnsupportedPlatform when the
+	// loaded library has no such call.
+	openFile(path string, out []byte) (status, read int32, err error)
+
 	// describeStatus is what a non-zero status means on this platform, or "" if unknown.
 	describeStatus(status int32) string
 
-	// hardenProcess applies process hardening, or returns an error wrapping
-	// ErrUnsupportedPlatform when this platform's library has no such call.
-	hardenProcess() (int32, error)
+	// hardenProcess is hkdfguard_harden_process_with_flags(flags): process hardening, with flags a
+	// bitwise OR of the HKDFGUARD_HARDEN_* flags. Every platform's library has it.
+	hardenProcess(flags uint32) int32
 }
 
 // KeyWrapper protects (Wrap) a DEK, or reveals (Unwrap) a previously-wrapped one, through the
@@ -49,7 +56,10 @@ type KeyWrapper struct {
 	library kmsLibrary
 }
 
-var _ hkdfguard.KeyWrapper = (*KeyWrapper)(nil)
+var (
+	_ hkdfguard.KeyWrapper    = (*KeyWrapper)(nil)
+	_ hkdfguard.KeyFileReader = (*KeyWrapper)(nil)
+)
 
 // New returns a KeyWrapper for the KEK identified by serviceName - 1 to 128 ASCII letters, digits
 // or '.', not starting with '.' and without ".." (see hkdfguard.ValidateServiceName). The name is
@@ -124,6 +134,50 @@ func (w *KeyWrapper) GenerateAndWrap(ctx context.Context, result []byte) (int, e
 	return w.complete("generate-and-wrap", status, written, result)
 }
 
+// ReadKeyFile reads a key file through the native library's hkdfguard_open_file rather than Go
+// file I/O, returning its bytes still wrapped - ready for Unwrap. Nothing is unwrapped and no KEK
+// is touched, so any service's wrapper reads any key file. Besides the size and format checks, the
+// native library refuses a file another account could have written or replaced - its path, owner
+// and permissions are checked the way only the platform can - and one holding what looks like an
+// unwrapped key. dek.Build reads every key file this way (it implements hkdfguard.KeyFileReader).
+//
+// A refusal is a *KeyFileError naming the path, status and its meaning; it satisfies
+// errors.Is(err, fs.ErrNotExist) for a missing file, errors.Is(err, fs.ErrPermission) for one this
+// account may not read or whose location isn't trusted, and errors.Is(err,
+// hkdfguard.ErrInvalidKeyFile) for one that isn't a wrapped key. An empty path never reaches the
+// native library.
+func (w *KeyWrapper) ReadKeyFile(ctx context.Context, path string) ([]byte, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return openKeyFile(w.library, path)
+}
+
+// openKeyFile is hkdfguard_open_file returning the bytes read, or an error. Every platform's
+// wrapped DEK fits in hkdfguard.MaxWrappedKeyBytes (Windows 132, Linux 276, macOS 125 bytes), so
+// one buffer never needs the size probe.
+func openKeyFile(library kmsLibrary, path string) ([]byte, error) {
+	if path == "" {
+		return nil, fmt.Errorf("nativev1: the key file path is empty: %w", fs.ErrInvalid)
+	}
+	if strings.IndexByte(path, 0) >= 0 {
+		return nil, fmt.Errorf("nativev1: the key file path '%s' contains a NUL byte: %w", path, fs.ErrInvalid)
+	}
+
+	buffer := make([]byte, hkdfguard.MaxWrappedKeyBytes)
+	status, read, err := library.openFile(path, buffer)
+	if err != nil {
+		return nil, err
+	}
+	if status != statusOK {
+		return nil, &KeyFileError{Path: path, Status: status, Description: library.describeStatus(status)}
+	}
+	if read <= 0 || int(read) > len(buffer) {
+		return nil, fmt.Errorf("nativev1: native KMS open-file for '%s' reported %d bytes read into a %d-byte buffer", path, read, len(buffer))
+	}
+	return buffer[:read:read], nil
+}
+
 // checkCall refuses a cancelled call, and buffers whose length the native int32 can't carry,
 // before any native call is made.
 func checkCall(ctx context.Context, input, result []byte) error {
@@ -146,37 +200,4 @@ func (w *KeyWrapper) complete(op string, status, written int32, result []byte) (
 		return 0, fmt.Errorf("nativev1: native KMS %s for service '%s' reported %d bytes written into a %d-byte buffer", op, w.service, written, len(result))
 	}
 	return int(written), nil
-}
-
-// HardenProcess hardens the whole process through the native KMS library, loading it if it isn't
-// already. DEKs pass through this process's memory, so a core dump, or another process of the
-// same user attaching a debugger or reading /proc/<pid>/mem, could recover them. On Linux it sets
-// the core dump limit to zero (hard limit included) and clears the process's dumpable flag.
-//
-// It is opt-in because it is process-wide: debuggers and crash dumps stop working for the
-// application. Call it once, early, and after any privilege drop - the kernel resets the dumpable
-// flag when a process's credentials change. It does not stop root or a process with
-// CAP_SYS_PTRACE, and it does not keep memory out of swap; those are host settings (no swap or
-// encrypted swap, kernel.yama.ptrace_scope of 2 or 3, and for a systemd service LimitCORE=0 and
-// ProtectProc=invisible).
-//
-// It returns an error wrapping ErrUnsupportedPlatform off Linux, and a *StatusError if the
-// hardening failed - treat that as a reason not to start.
-func HardenProcess() error {
-	library, err := hostLibrary()
-	if err != nil {
-		return err
-	}
-	return hardenProcess(library)
-}
-
-func hardenProcess(library kmsLibrary) error {
-	status, err := library.hardenProcess()
-	if err != nil {
-		return err
-	}
-	if status != statusOK {
-		return &StatusError{Op: "process hardening", Status: status, Description: library.describeStatus(status)}
-	}
-	return nil
 }

@@ -98,7 +98,7 @@ func loadPlatformLibrary() (kmsLibrary, error) {
 		return nil, err
 	}
 
-	library, err := bindDL(handle, "", macStatusDescriptions)
+	library, err := bindDL(handle, describeMacStatus)
 	if err != nil {
 		dlClose(handle)
 		return nil, err

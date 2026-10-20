@@ -3,6 +3,9 @@ package nativev1
 import (
 	"errors"
 	"fmt"
+	"io/fs"
+
+	"github.com/runsecure/hkdfguard-go"
 )
 
 var (
@@ -19,8 +22,9 @@ var (
 	ErrUnsupportedPlatform = errors.New("nativev1: unsupported platform")
 )
 
-// StatusError reports a native call that returned a non-zero status. Status codes differ between
-// platforms; Description is this platform's meaning of Status, or "" when it is unknown.
+// StatusError reports a native call that returned a non-zero status. Every platform's library shares
+// one table of status codes; Description is what Status means on this platform, or "" when it is
+// unknown.
 type StatusError struct {
 	// Op is the operation that failed: "wrap", "unwrap", "generate-and-wrap", or
 	// "process hardening".
@@ -45,6 +49,55 @@ func (e *StatusError) Error() string {
 		return fmt.Sprintf("Native %s failed with status %d%s.", e.Op, e.Status, meaning)
 	}
 	return fmt.Sprintf("Native KMS %s failed for service '%s' with status %d%s.", e.Op, e.Service, e.Status, meaning)
+}
+
+// KeyFileError reports a key file the native library's hkdfguard_open_file refused (see
+// KeyWrapper.ReadKeyFile). It unwraps to the error a caller can act on, so errors.Is works without
+// knowing the status codes:
+//
+//   - fs.ErrNotExist: the file, or a folder in its path, does not exist (-32).
+//   - fs.ErrPermission: this account may not read the file (-33), or the native library doesn't
+//     trust its location - a link or reparse point, an 8.3 short name, a network path, or a file or
+//     folder another account could write or replace (-39).
+//   - hkdfguard.ErrInvalidKeyFile: the file is too short (-35) or too long (-36), holds what looks
+//     like an unwrapped key (-37; treat it as a key exposure), or is the right size but not a valid
+//     wrapped key (-38) - the same sentinel a managed read returns for an empty or oversized file.
+//   - fs.ErrInvalid: the native library refused the path itself (-1).
+//
+// Any other status (such as -34, not a regular file or a failed read) unwraps to nothing.
+type KeyFileError struct {
+	// Path is the key file's path, as given.
+	Path string
+
+	// Status is the native library's status code.
+	Status int32
+
+	// Description is what Status means on this platform, or "".
+	Description string
+}
+
+func (e *KeyFileError) Error() string {
+	description := e.Description
+	if description == "" {
+		description = "unknown status"
+	}
+	return fmt.Sprintf("Key file '%s' was refused by the native library with status %d (%s).", e.Path, e.Status, description)
+}
+
+// Unwrap returns the sentinel Status maps to, or nil.
+func (e *KeyFileError) Unwrap() error {
+	switch e.Status {
+	case errFileNotFound:
+		return fs.ErrNotExist
+	case errFileAccessDenied, errFileUntrusted:
+		return fs.ErrPermission
+	case errFileTooShort, errFileTooLong, errFilePlaintextKey, errFileMalformed:
+		return hkdfguard.ErrInvalidKeyFile
+	case errInvalidArgument:
+		return fs.ErrInvalid
+	default:
+		return nil
+	}
 }
 
 // untrusted returns an error wrapping ErrUntrusted with a formatted reason.

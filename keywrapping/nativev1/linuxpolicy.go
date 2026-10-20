@@ -18,16 +18,17 @@ import (
 //  2. Path integrity. Every directory walked through, every symbolic link followed, and the file
 //     itself must be owned by root, and no directory or file may be writable by its group or by
 //     others. Symbolic links are followed component by component, each checked where it lies.
-//  3. Content. The file's SHA-256 must be one of linuxKnownReleases - Linux has no platform code
-//     signature, so this pin is what tells a genuine release from any other ELF file.
-//  4. Environment. The library's dependencies are found by name: through LD_LIBRARY_PATH, and after
+//  3. Environment. The library's dependencies are found by name: through LD_LIBRARY_PATH, and after
 //     LD_PRELOAD and LD_AUDIT objects that can interpose on any symbol. So every location those
 //     name must pass the same path checks, and none may be relative, empty (the working directory)
 //     or use $ORIGIN-style substitutions - in both the environment the process started with
 //     (/proc/self/environ, what the dynamic linker read) and the current one.
-//  5. What was loaded. After dlopen, dladdr must place the library's export in the verified file,
+//  4. What was loaded. After dlopen, dladdr must place the library's export in the verified file,
 //     and every object in its dependency closure (each file's DT_NEEDED entries) must be bound to a
 //     file that passes the path checks.
+//
+// The library is not content-pinned: a release's authenticity is verified with Sigstore/cosign when
+// the package is installed, so path integrity is what the loader enforces.
 //
 // Out of reach here: the tpm2-tss TCTI module is loaded later, by name (the environment check
 // covers it), and Go-level injection (a replaced binary, a debugger) is the host's to prevent.
@@ -44,13 +45,6 @@ const (
 	// linuxMaxSymbolicLinks is the kernel's own limit on symbolic links followed in one lookup.
 	linuxMaxSymbolicLinks = 40
 )
-
-// linuxKnownReleases holds the SHA-256 of every native release this package accepts, with what it
-// is. Each distribution and architecture gets its own build, so each needs its own entry; a
-// release whose hash is not here is refused until this package is updated to list it.
-var linuxKnownReleases = map[string]string{
-	"a3a9312fd2d603a62e6a5b1ed46ba5e4a51adcba321aa5a1014a762ff07ca064": "libhkdfguard1 0.1.0-1~ubuntu24.04.1 (amd64)",
-}
 
 // linuxCandidatePaths returns where the package may have installed the library for a process of
 // goarch, in the order they are tried.
@@ -214,18 +208,6 @@ func linuxParentOf(path string) string {
 		return "/"
 	}
 	return path[:slash]
-}
-
-// linuxVerifyContent requires the file's SHA-256 (lowercase hex) to be a known release.
-func linuxVerifyContent(path string, sha256Hex func(string) (string, error), knownReleases map[string]string) error {
-	hash, err := sha256Hex(path)
-	if err != nil {
-		return err
-	}
-	if _, ok := knownReleases[hash]; !ok {
-		return untrusted("'%s' has SHA-256 %s, which is not a HkdfGuard native release this version of nativev1 recognizes; refusing to load it. If it is a newer genuine release, update nativev1.", path, hash)
-	}
-	return nil
 }
 
 // linuxReadEnvironment returns every value each dynamic-linker variable has had: in the

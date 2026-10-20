@@ -1,12 +1,11 @@
 package dek
 
 import (
-	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
-	"runtime"
 	"testing"
 	"time"
 
@@ -160,48 +159,72 @@ func TestBuild_WhenCancelled_CreatesNothing(t *testing.T) {
 	}
 }
 
-func TestKeyFiles_WritableByGroupOrOthers_AreRefused(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("Unix permission bits are not meaningful on Windows")
-	}
-	contents := []byte{1, 2, 3}
+// keyFileReadingWrapper is a KeyWrapper that reads its own key files (hkdfguard.KeyFileReader).
+type keyFileReadingWrapper struct {
+	nopKeyWrapper
+	paths    []string
+	contents map[string][]byte
+	err      error
+}
 
-	for _, mode := range []os.FileMode{0o400, 0o600, 0o640, 0o644} {
-		path := writeKeyFile(t, contents)
-		if err := os.Chmod(path, mode); err != nil {
-			t.Fatal(err)
-		}
-		if read, err := readKeyFile(path); err != nil || !bytes.Equal(read, contents) {
-			t.Errorf("mode %04o: read %v, %v; want the contents", mode, read, err)
-		}
+func (w *keyFileReadingWrapper) ReadKeyFile(_ context.Context, path string) ([]byte, error) {
+	w.paths = append(w.paths, path)
+	if w.err != nil {
+		return nil, w.err
 	}
-	for _, mode := range []os.FileMode{0o620, 0o660, 0o602, 0o666} {
-		path := writeKeyFile(t, contents)
-		if err := os.Chmod(path, mode); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := readKeyFile(path); !errors.Is(err, ErrInvalidKeyFile) {
-			t.Errorf("mode %04o: %v; want ErrInvalidKeyFile", mode, err)
-		}
+	return w.contents[path], nil
+}
+
+func TestBuild_ReadsEachKeyFileThroughAWrapperThatReadsItsOwn(t *testing.T) {
+	f := &recordingFactory{t: t}
+	config := baseConfig(f)
+	// Paths that don't exist: only the wrapper can produce their bytes.
+	wrapper := &keyFileReadingWrapper{contents: map[string][]byte{"/keys/one": []byte("from the wrapper one"), "/keys/two": []byte("from the wrapper two")}}
+	config.KeyWrapper = wrapper
+	config.KeyFiles = map[int]string{1: "/keys/one", 2: "/keys/two"}
+
+	ring := mustBuild(t, config)
+
+	requireCurrent(t, ring, 2)
+	if len(wrapper.paths) != 2 || wrapper.paths[0] != "/keys/one" || wrapper.paths[1] != "/keys/two" {
+		t.Errorf("the wrapper was asked for %v", wrapper.paths)
+	}
+	if len(f.wrapped) != 2 || string(f.wrapped[0]) != "from the wrapper one" || string(f.wrapped[1]) != "from the wrapper two" {
+		t.Errorf("factory saw %q", f.wrapped)
 	}
 }
 
-func TestKeyFiles_ThatAreNotRegularFiles_AreRefused(t *testing.T) {
-	if _, err := readKeyFile(t.TempDir()); !errors.Is(err, ErrInvalidKeyFile) {
-		t.Errorf("a directory: %v; want ErrInvalidKeyFile", err)
+func TestBuild_AKeyFileTheWrapperRefuses_FailsTheBuild_WithTheWrappersError(t *testing.T) {
+	f := &recordingFactory{t: t}
+	config := baseConfig(f)
+	refusal := fmt.Errorf("%w: refused by the native library", ErrInvalidKeyFile)
+	config.KeyWrapper = &keyFileReadingWrapper{err: refusal}
+	config.KeyFiles = map[int]string{1: writeKeyFile(t, []byte("a perfectly readable file"))}
+	config.EphemeralKeys = []int{2}
+
+	_, err := Build(bg, config)
+
+	if !errors.Is(err, refusal) || !errors.Is(err, hkdfguard.ErrInvalidKeyFile) {
+		t.Errorf("error = %v; want the wrapper's refusal", err)
+	}
+	if len(f.wrapped) != 0 {
+		t.Error("a refused key file reached the factory")
 	}
 }
 
-func TestKeyFiles_UpToTheLimitAreReadWhole_AndEmptyOrLargerOnesRefused(t *testing.T) {
-	for _, length := range []int{1, hkdfguard.MaxWrappedKeyBytes} {
-		contents := bytes.Repeat([]byte{7}, length)
-		if read, err := readKeyFile(writeKeyFile(t, contents)); err != nil || !bytes.Equal(read, contents) {
-			t.Errorf("%d bytes: read %d, %v", length, len(read), err)
-		}
+func TestBuild_WithAWrapperThatDoesNotReadKeyFiles_ReadsThemItself(t *testing.T) {
+	// nopKeyWrapper doesn't implement hkdfguard.KeyFileReader.
+	if _, ok := any(nopKeyWrapper{}).(hkdfguard.KeyFileReader); ok {
+		t.Fatal("nopKeyWrapper reads key files")
 	}
-	for _, length := range []int{0, hkdfguard.MaxWrappedKeyBytes + 1, 1 << 20} {
-		if _, err := readKeyFile(writeKeyFile(t, make([]byte, length))); !errors.Is(err, ErrInvalidKeyFile) {
-			t.Errorf("%d bytes: %v", length, err)
-		}
+	f := &recordingFactory{t: t}
+	config := baseConfig(f)
+	config.KeyFiles = map[int]string{1: writeKeyFile(t, nil)}
+
+	if _, err := Build(bg, config); !errors.Is(err, ErrInvalidKeyFile) {
+		t.Errorf("an empty key file: %v; want ErrInvalidKeyFile", err)
+	}
+	if ErrInvalidKeyFile != hkdfguard.ErrInvalidKeyFile {
+		t.Error("dek.ErrInvalidKeyFile is not hkdfguard.ErrInvalidKeyFile")
 	}
 }

@@ -10,7 +10,7 @@ import (
 	"testing"
 )
 
-// The Linux loader's path and content checks against this machine's real filesystem, and the
+// The Linux loader's path checks against this machine's real filesystem, and the
 // installed libhkdfguard1 package where there is one. These need no cgo; the dynamic-linker
 // checks and the native round trips are in kms_linux_cgo_test.go.
 
@@ -118,14 +118,24 @@ func TestLinuxSystem_StatusAndReadLink_DescribeThisUsersFiles(t *testing.T) {
 	}
 }
 
-func TestLinuxSystem_TheInstalledLibrary_IsAKnownReleaseInATrustedLocation(t *testing.T) {
+func TestLinuxSystem_TheInstalledLibrary_IsInATrustedLocation(t *testing.T) {
 	path := installedLinuxLibraryPath(t)
 
-	resolved, err := linuxTrustedFile(path)
-	if err != nil {
+	if _, err := linuxTrustedFile(path); err != nil {
 		t.Fatalf("location: %v", err)
 	}
-	if err := linuxVerifyContent(resolved, sha256File, linuxKnownReleases); err != nil {
-		t.Errorf("content: %v", err)
+}
+
+func TestLinuxSystem_TheInstalledLibrary_NeedsTPM2TSSAndLibc(t *testing.T) {
+	path := installedLinuxLibraryPath(t)
+
+	needed, err := elfReadNeededFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"libtss2-esys.so.0", "libc.so.6"} {
+		if !slices.Contains(needed, want) {
+			t.Errorf("DT_NEEDED = %v; want %s among them", needed, want)
+		}
 	}
 }

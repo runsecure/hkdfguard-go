@@ -3,6 +3,8 @@ package nativev1
 import (
 	"strings"
 	"testing"
+
+	"github.com/runsecure/hkdfguard-go"
 )
 
 func TestDEKLengthAndOK(t *testing.T) {
@@ -11,52 +13,155 @@ func TestDEKLengthAndOK(t *testing.T) {
 	}
 }
 
-func requireDescribed(t *testing.T, table map[int32]string, statuses ...int32) {
-	t.Helper()
-	for _, status := range statuses {
-		if table[status] == "" {
-			t.Errorf("no description for %d", status)
+// headerStatuses is every status code hkdfguard.h defines, by its header name, with its value
+// there. Every platform's library shares this table number for number.
+var headerStatuses = map[string]int32{
+	"HKDFGUARD_ERR_INVALID_ARGUMENT":                   -1,
+	"HKDFGUARD_ERR_BUFFER_TOO_SMALL":                   -2,
+	"HKDFGUARD_ERR_PROVIDER_UNAVAILABLE":               -3,
+	"HKDFGUARD_ERR_PROVIDER_ERROR":                     -4,
+	"HKDFGUARD_ERR_CRYPTO_ERROR":                       -5,
+	"HKDFGUARD_ERR_INTERNAL_ERROR":                     -6,
+	"HKDFGUARD_ERR_INVALID_SERVICE_NAME":               -8,
+	"HKDFGUARD_ERR_POLICY_INVALID":                     -9,
+	"HKDFGUARD_ERR_PAYLOAD_MALFORMED":                  -10,
+	"HKDFGUARD_ERR_PAYLOAD_AUTH_FAILED":                -11,
+	"HKDFGUARD_ERR_PAYLOAD_UNSUPPORTED":                -12,
+	"HKDFGUARD_ERR_KEK_FINGERPRINT_MISMATCH":           -16,
+	"HKDFGUARD_ERR_KEK_NOT_FOUND":                      -17,
+	"HKDFGUARD_ERR_KEK_ACCESS_DENIED":                  -18,
+	"HKDFGUARD_ERR_KEK_INVALID":                        -19,
+	"HKDFGUARD_ERR_PROCESS_HARDENING_FAILED":           -20,
+	"HKDFGUARD_ERR_FILE_NOT_FOUND":                     -32,
+	"HKDFGUARD_ERR_FILE_ACCESS_DENIED":                 -33,
+	"HKDFGUARD_ERR_FILE_IO":                            -34,
+	"HKDFGUARD_ERR_FILE_TOO_SHORT":                     -35,
+	"HKDFGUARD_ERR_FILE_TOO_LONG":                      -36,
+	"HKDFGUARD_ERR_FILE_PLAINTEXT_KEY":                 -37,
+	"HKDFGUARD_ERR_FILE_MALFORMED":                     -38,
+	"HKDFGUARD_ERR_FILE_UNTRUSTED":                     -39,
+	"HKDFGUARD_ERR_WIN_GROUP_INVALID":                  -64,
+	"HKDFGUARD_ERR_MAC_ACCESS_CONTROL_CREATION_FAILED": -96,
+	"HKDFGUARD_ERR_MAC_KEY_GENERATION_FAILED":          -97,
+	"HKDFGUARD_ERR_MAC_KEYCHAIN_WRITE_FAILED":          -98,
+	"HKDFGUARD_ERR_MAC_KEK_VERIFICATION_FAILED":        -99,
+	"HKDFGUARD_ERR_MAC_KEYCHAIN_READ_FAILED":           -100,
+}
+
+func TestStatusConstants_AreTheHeadersValues(t *testing.T) {
+	constants := map[string]int32{
+		"HKDFGUARD_ERR_INVALID_ARGUMENT":                   errInvalidArgument,
+		"HKDFGUARD_ERR_BUFFER_TOO_SMALL":                   errBufferTooSmall,
+		"HKDFGUARD_ERR_PROVIDER_UNAVAILABLE":               errProviderUnavailable,
+		"HKDFGUARD_ERR_PROVIDER_ERROR":                     errProviderError,
+		"HKDFGUARD_ERR_CRYPTO_ERROR":                       errCryptoError,
+		"HKDFGUARD_ERR_INTERNAL_ERROR":                     errInternalError,
+		"HKDFGUARD_ERR_INVALID_SERVICE_NAME":               errInvalidServiceName,
+		"HKDFGUARD_ERR_POLICY_INVALID":                     errPolicyInvalid,
+		"HKDFGUARD_ERR_PAYLOAD_MALFORMED":                  errPayloadMalformed,
+		"HKDFGUARD_ERR_PAYLOAD_AUTH_FAILED":                errPayloadAuthFailed,
+		"HKDFGUARD_ERR_PAYLOAD_UNSUPPORTED":                errPayloadUnsupported,
+		"HKDFGUARD_ERR_KEK_FINGERPRINT_MISMATCH":           errKEKFingerprintMismatch,
+		"HKDFGUARD_ERR_KEK_NOT_FOUND":                      errKEKNotFound,
+		"HKDFGUARD_ERR_KEK_ACCESS_DENIED":                  errKEKAccessDenied,
+		"HKDFGUARD_ERR_KEK_INVALID":                        errKEKInvalid,
+		"HKDFGUARD_ERR_PROCESS_HARDENING_FAILED":           errProcessHardeningFailed,
+		"HKDFGUARD_ERR_FILE_NOT_FOUND":                     errFileNotFound,
+		"HKDFGUARD_ERR_FILE_ACCESS_DENIED":                 errFileAccessDenied,
+		"HKDFGUARD_ERR_FILE_IO":                            errFileIO,
+		"HKDFGUARD_ERR_FILE_TOO_SHORT":                     errFileTooShort,
+		"HKDFGUARD_ERR_FILE_TOO_LONG":                      errFileTooLong,
+		"HKDFGUARD_ERR_FILE_PLAINTEXT_KEY":                 errFilePlaintextKey,
+		"HKDFGUARD_ERR_FILE_MALFORMED":                     errFileMalformed,
+		"HKDFGUARD_ERR_FILE_UNTRUSTED":                     errFileUntrusted,
+		"HKDFGUARD_ERR_WIN_GROUP_INVALID":                  errWinGroupInvalid,
+		"HKDFGUARD_ERR_MAC_ACCESS_CONTROL_CREATION_FAILED": errMacAccessControlCreationFailed,
+		"HKDFGUARD_ERR_MAC_KEY_GENERATION_FAILED":          errMacKeyGenerationFailed,
+		"HKDFGUARD_ERR_MAC_KEYCHAIN_WRITE_FAILED":          errMacKeychainWriteFailed,
+		"HKDFGUARD_ERR_MAC_KEK_VERIFICATION_FAILED":        errMacKEKVerificationFailed,
+		"HKDFGUARD_ERR_MAC_KEYCHAIN_READ_FAILED":           errMacKeychainReadFailed,
+	}
+	if len(constants) != len(headerStatuses) {
+		t.Errorf("%d constants for %d header statuses", len(constants), len(headerStatuses))
+	}
+	for name, want := range headerStatuses {
+		if got, ok := constants[name]; !ok || got != want {
+			t.Errorf("%s = %d (defined: %v), want %d", name, got, ok, want)
 		}
 	}
 }
 
-func requireUndescribed(t *testing.T, table map[int32]string, statuses ...int32) {
-	t.Helper()
-	for _, status := range statuses {
-		if description, ok := table[status]; ok {
-			t.Errorf("%d is described as %q, want no description", status, description)
+func TestWrappedKeyFileLengths_FitTheBufferTheKeyFileReadUses(t *testing.T) {
+	// Each platform's HKDFGUARD_WRAPPED_MAX_LEN: hkdfguard_open_file needs at least that much room,
+	// and openKeyFile always offers hkdfguard.MaxWrappedKeyBytes.
+	for platform, length := range map[string]int{"windows": 132, "linux": 276, "darwin": 125} {
+		if length > hkdfguard.MaxWrappedKeyBytes {
+			t.Errorf("%s: a %d-byte wrapped DEK does not fit %d bytes", platform, length, hkdfguard.MaxWrappedKeyBytes)
 		}
 	}
 }
 
-func TestWindowsStatuses_EveryDefinedOneIsDescribed_AndNothingElse(t *testing.T) {
-	for status := int32(-14); status <= -1; status++ {
-		requireDescribed(t, windowsStatusDescriptions, status)
-	}
-	requireUndescribed(t, windowsStatusDescriptions, -15, 1)
+var platformDescribers = map[string]func(int32) string{
+	"shared":  describeStatus,
+	"windows": describeWindowsStatus,
+	"linux":   describeLinuxStatus,
+	"darwin":  describeMacStatus,
+}
 
-	accessDenied := windowsStatusDescriptions[winErrAccessDenied]
-	if !strings.Contains(accessDenied, "not authorized") || !strings.Contains(accessDenied, "HkdfGuardUsers") {
-		t.Errorf("access denied = %q", accessDenied)
+func TestEveryPlatform_DescribesEveryDefinedStatus_AndNoReservedOne(t *testing.T) {
+	defined := map[int32]bool{}
+	for _, status := range headerStatuses {
+		defined[status] = true
 	}
-	if !strings.Contains(windowsStatusDescriptions[winErrKEKNotFound], "provision") {
-		t.Errorf("KEK not found = %q", windowsStatusDescriptions[winErrKEKNotFound])
+
+	for platform, describe := range platformDescribers {
+		for status := int32(-200); status <= 1; status++ {
+			description := describe(status)
+			switch {
+			case defined[status] && description == "":
+				t.Errorf("%s: no description for %d", platform, status)
+			case !defined[status] && description != "":
+				t.Errorf("%s: reserved or unknown %d is described as %q", platform, status, description)
+			}
+		}
 	}
 }
 
-func TestMacStatuses_EveryReturnedOneIsDescribed_ButNotTheReservedOnes(t *testing.T) {
-	requireDescribed(t, macStatusDescriptions, -1, -2, -5, -6, -7, -8, -9, -10, -11, -12, -13, -14, -15, -16, -17, -18)
-	requireUndescribed(t, macStatusDescriptions, macErrKeyUnavailable, macErrPublicKeyUnavailable, -19)
-}
-
-func TestLinuxStatuses_EveryReturnedOneIsDescribed_ButNotTheReservedOrUnassignedOnes(t *testing.T) {
-	requireDescribed(t, linuxStatusDescriptions, -1, -2, -3, -4, -5, -6, -8, -9, -16, -17)
-	requireUndescribed(t, linuxStatusDescriptions, linuxErrInvalidUTF8, -10, -11, -12, -13, -14, -15, -18, 1)
-
-	if !strings.Contains(linuxStatusDescriptions[linuxErrKEKNotFound], "provision") {
-		t.Errorf("KEK not found = %q", linuxStatusDescriptions[linuxErrKEKNotFound])
+func TestPlatformHints_SayWhatToDoThere(t *testing.T) {
+	checks := []struct {
+		platform string
+		status   int32
+		want     []string
+	}{
+		{"windows", errKEKAccessDenied, []string{"not authorized", "HkdfGuardUsers", "KeyUseGroups"}},
+		{"windows", errKEKNotFound, []string{"hkdfguard provision", "elevated"}},
+		{"windows", errPolicyInvalid, []string{`HKLM\Software\Policies\HkdfGuard`}},
+		{"windows", errWinGroupInvalid, []string{"KeyUseGroups"}},
+		{"linux", errPolicyInvalid, []string{"/etc/hkdfguard/policy.toml"}},
+		{"linux", errKEKNotFound, []string{"hkdfguard provision"}},
+		{"linux", errKEKFingerprintMismatch, []string{"different KEK"}},
+		{"darwin", errKEKAccessDenied, []string{"keychain"}},
+		{"darwin", errProviderUnavailable, []string{"Secure Enclave"}},
+		{"darwin", errKEKNotFound, []string{"hkdfguard provision", "keychain mode"}},
+		{"windows", errProcessHardeningFailed, []string{"access lists", "RequireProtectedSignature"}},
+		{"linux", errProcessHardeningFailed, []string{"ptrace"}},
+		{"darwin", errProcessHardeningFailed, []string{"Hardened Runtime", "get-task-allow", "RequireProtectedSignature"}},
+		{"shared", errFilePlaintextKey, []string{"UNWRAPPED", "key exposure"}},
+		{"shared", errKEKNotFound, []string{"hkdfguard provision"}},
 	}
-	if !strings.Contains(linuxStatusDescriptions[linuxErrFingerprintMismatch], "different KEK") {
-		t.Errorf("fingerprint mismatch = %q", linuxStatusDescriptions[linuxErrFingerprintMismatch])
+	for _, c := range checks {
+		description := platformDescribers[c.platform](c.status)
+		for _, want := range c.want {
+			if !strings.Contains(description, want) {
+				t.Errorf("%s %d = %q, want it to mention %q", c.platform, c.status, description, want)
+			}
+		}
+	}
+
+	// Where a platform adds nothing, it says what every platform says.
+	for platform, describe := range platformDescribers {
+		if describe(errFileUntrusted) != describeStatus(errFileUntrusted) {
+			t.Errorf("%s describes -39 as %q", platform, describe(errFileUntrusted))
+		}
 	}
 }

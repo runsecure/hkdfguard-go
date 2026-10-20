@@ -57,6 +57,8 @@ func winLoad(path, expectedPublisher string) (kmsLibrary, error) {
 		{"hkdfguard_wrap_dek", &library.wrap},
 		{"hkdfguard_unwrap_dek", &library.unwrap},
 		{"hkdfguard_generate_and_wrap_dek", &library.generateAndWrap},
+		{"hkdfguard_open_file", &library.openFileProc},
+		{"hkdfguard_harden_process_with_flags", &library.hardenProc},
 	} {
 		address, err := windows.GetProcAddress(handle, export.name)
 		if err != nil {
@@ -333,10 +335,12 @@ func winVerifyImageKindOf(path string) error {
 	return winVerifyImageKind(path, file.FileHeader.Characteristics, file.FileHeader.Machine, runtime.GOARCH)
 }
 
-// winLibrary is the loaded HkdfGuardV1.dll and its exports.
+// winLibrary is the loaded HkdfGuard.dll and its exports.
 type winLibrary struct {
 	handle                        windows.Handle
 	wrap, unwrap, generateAndWrap uintptr
+	openFileProc                  uintptr
+	hardenProc                    uintptr
 }
 
 func (l *winLibrary) wrapDEK(service string, dek, out []byte) (int32, int32) {
@@ -350,7 +354,7 @@ func (l *winLibrary) unwrapDEK(service string, wrapped, out []byte) (int32, int3
 func winCall(proc uintptr, service string, in, out []byte) (int32, int32) {
 	cservice, err := windows.BytePtrFromString(service)
 	if err != nil {
-		return winErrInvalidArg, 0
+		return errInvalidArgument, 0
 	}
 	outLen := int32(len(out))
 	status, _, _ := syscall.SyscallN(proc,
@@ -365,7 +369,7 @@ func winCall(proc uintptr, service string, in, out []byte) (int32, int32) {
 func (l *winLibrary) generateAndWrapDEK(service string, out []byte) (int32, int32) {
 	cservice, err := windows.BytePtrFromString(service)
 	if err != nil {
-		return winErrInvalidArg, 0
+		return errInvalidArgument, 0
 	}
 	outLen := int32(len(out))
 	status, _, _ := syscall.SyscallN(l.generateAndWrap,
@@ -375,6 +379,25 @@ func (l *winLibrary) generateAndWrapDEK(service string, out []byte) (int32, int3
 	return int32(status), outLen
 }
 
-func (l *winLibrary) describeStatus(status int32) string { return windowsStatusDescriptions[status] }
+// openFile is hkdfguard_open_file(const char* path, uint8_t* out, int* out_len).
+func (l *winLibrary) openFile(path string, out []byte) (int32, int32, error) {
+	cpath, err := windows.BytePtrFromString(path)
+	if err != nil {
+		return errInvalidArgument, 0, nil
+	}
+	outLen := int32(len(out))
+	status, _, _ := syscall.SyscallN(l.openFileProc,
+		uintptr(unsafe.Pointer(cpath)),
+		uintptr(unsafe.Pointer(unsafe.SliceData(out))), uintptr(unsafe.Pointer(&outLen)))
+	runtime.KeepAlive(cpath)
+	runtime.KeepAlive(out)
+	return int32(status), outLen, nil
+}
 
-func (l *winLibrary) hardenProcess() (int32, error) { return 0, errNoHardening }
+func (l *winLibrary) describeStatus(status int32) string { return describeWindowsStatus(status) }
+
+// hardenProcess is hkdfguard_harden_process_with_flags(unsigned int flags).
+func (l *winLibrary) hardenProcess(flags uint32) int32 {
+	status, _, _ := syscall.SyscallN(l.hardenProc, uintptr(flags))
+	return int32(status)
+}
