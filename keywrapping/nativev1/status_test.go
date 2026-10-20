@@ -142,7 +142,7 @@ func TestPlatformHints_SayWhatToDoThere(t *testing.T) {
 		{"linux", errKEKFingerprintMismatch, []string{"different KEK"}},
 		{"darwin", errKEKAccessDenied, []string{"keychain"}},
 		{"darwin", errProviderUnavailable, []string{"Secure Enclave"}},
-		{"darwin", errKEKNotFound, []string{"hkdfguard-v1-initialize provision"}},
+		{"darwin", errKEKNotFound, []string{"hkdfguard provision", "keychain mode"}},
 		{"windows", errProcessHardeningFailed, []string{"access lists", "RequireProtectedSignature"}},
 		{"linux", errProcessHardeningFailed, []string{"ptrace"}},
 		{"darwin", errProcessHardeningFailed, []string{"Hardened Runtime", "get-task-allow", "RequireProtectedSignature"}},
@@ -162,11 +162,6 @@ func TestPlatformHints_SayWhatToDoThere(t *testing.T) {
 	for platform, describe := range platformDescribers {
 		if describe(errFileUntrusted) != describeStatus(errFileUntrusted) {
 			t.Errorf("%s describes -39 as %q", platform, describe(errFileUntrusted))
-		}
-	}
-	for _, describe := range platformDescribers {
-		if strings.Contains(describe(errKEKNotFound), "hkdfguard-v1-initialize") && describe(errKEKNotFound) != describeMacStatus(errKEKNotFound) {
-			t.Errorf("only macOS keeps the hkdfguard-v1-initialize name: %q", describe(errKEKNotFound))
 		}
 	}
 }

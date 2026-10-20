@@ -120,11 +120,11 @@ func TestMacRequireSupportedPlatform_RefusesMacOSOlderThan13_OrAnUnknownVersion(
 // --- Locations ------------------------------------------------------------------------------
 
 func TestMacTheTwoLocations_AreTheAgreedPaths(t *testing.T) {
-	if macSystemPath != "/Library/Application Support/HkdfGuard/v1/libhkdfguard_v1.dylib" {
+	if macSystemPath != "/Library/Application Support/HkdfGuard/v1/libhkdfguard.dylib" {
 		t.Errorf("macSystemPath = %q", macSystemPath)
 	}
 	for _, home := range []string{"/Users/dev", "/Users/dev/"} {
-		if got := macUserPath(home); got != "/Users/dev/.hkdfguard/v1/libhkdfguard_v1.dylib" {
+		if got := macUserPath(home); got != "/Users/dev/.hkdfguard/v1/libhkdfguard.dylib" {
 			t.Errorf("macUserPath(%q) = %q", home, got)
 		}
 	}
@@ -191,7 +191,7 @@ func TestMacChoosePath_WithNeitherInstallUsable_ReportsNotInstalledNamingBothLoc
 			return errnoENOENT
 		}, home)
 
-		if !errors.Is(err, ErrNotInstalled) || !strings.Contains(err.Error(), macSystemPath) || !strings.Contains(err.Error(), ".hkdfguard/v1/libhkdfguard_v1.dylib") {
+		if !errors.Is(err, ErrNotInstalled) || !strings.Contains(err.Error(), macSystemPath) || !strings.Contains(err.Error(), ".hkdfguard/v1/libhkdfguard.dylib") {
 			t.Errorf("home %q: error = %v", home, err)
 		}
 	}
@@ -335,7 +335,7 @@ func TestMacADirectoryThatIsARegularFile_IsDescribedAsSuch(t *testing.T) {
 // --- Code signature -------------------------------------------------------------------------
 
 func TestMacTheCodeRequirement_PinsTheHkdfGuardTeam(t *testing.T) {
-	want := `identifier "libhkdfguard_v1" and anchor apple generic` +
+	want := `identifier "libhkdfguard" and anchor apple generic` +
 		` and certificate 1[field.1.2.840.113635.100.6.2.6] exists` +
 		` and certificate leaf[field.1.2.840.113635.100.6.1.13] exists` +
 		` and certificate leaf[subject.OU] = "MFW3T8R8J3"`
@@ -372,7 +372,7 @@ func TestMacRefuseShadowing_Allows_WhenNothingOnDyldLibraryPathHasTheLibrarysNam
 }
 
 func TestMacRefuseShadowing_Refuses_WhenADyldLibraryPathDirectoryHoldsTheLibrarysName(t *testing.T) {
-	const decoy = "/tmp/decoy/libhkdfguard_v1.dylib"
+	const decoy = "/tmp/decoy/libhkdfguard.dylib"
 	for _, searchPath := range []string{"/tmp/decoy", "/opt/lib:/tmp/decoy/:/usr/local/lib"} {
 		err := macRefuseShadowing(func(string) string { return searchPath }, func(p string) bool { return p == decoy })
 
@@ -393,8 +393,8 @@ func TestMacVerifyLoadedImage(t *testing.T) {
 	if err := macVerifyLoadedImage(macSystemPath, macSystemPath); err != nil {
 		t.Errorf("the verified path: %v", err)
 	}
-	requireUntrusted(t, macVerifyLoadedImage(macSystemPath, "/tmp/decoy/libhkdfguard_v1.dylib"),
-		"/tmp/decoy/libhkdfguard_v1.dylib", macSystemPath, "unloaded")
+	requireUntrusted(t, macVerifyLoadedImage(macSystemPath, "/tmp/decoy/libhkdfguard.dylib"),
+		"/tmp/decoy/libhkdfguard.dylib", macSystemPath, "unloaded")
 	requireUntrusted(t, macVerifyLoadedImage(macSystemPath, ""), probeExport)
 }
 

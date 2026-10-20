@@ -45,7 +45,7 @@ func TestTheMacOSProvisioningScript_PinsWhatTheLoaderPins(t *testing.T) {
 		t.Errorf("TEAM_ID = %q, but the loader pins %q", match, macTeamID)
 	}
 	// The loader's requirement for the library, naming the tool instead.
-	want := strings.Replace(macCodeRequirement, `identifier "libhkdfguard_v1"`, `identifier "hkdfguard-v1-initialize"`, 1)
+	want := strings.Replace(macCodeRequirement, `identifier "libhkdfguard"`, `identifier "hkdfguard"`, 1)
 	if match := regexp.MustCompile(`(?m)^readonly REQUIREMENT='([^']*)'$`).FindSubmatch(script); match == nil || string(match[1]) != want {
 		t.Errorf("REQUIREMENT = %q, but the loader requires %q", match, want)
 	}

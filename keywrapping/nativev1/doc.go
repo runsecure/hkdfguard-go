@@ -10,8 +10,8 @@
 // only from there after verification:
 //
 //	Windows: %ProgramFiles%\HkdfGuard\v1\HkdfGuard.dll
-//	macOS:   /Library/Application Support/HkdfGuard/v1/libhkdfguard_v1.dylib, or
-//	         ~/.hkdfguard/v1/libhkdfguard_v1.dylib (only when there is no system install)
+//	macOS:   /Library/Application Support/HkdfGuard/v1/libhkdfguard.dylib, or
+//	         ~/.hkdfguard/v1/libhkdfguard.dylib (only when there is no system install)
 //	Linux:   /usr/lib/<multiarch>/libhkdfguard.so.1, or /usr/lib64/libhkdfguard.so.1
 //
 // Verification checks the ownership and permissions of every path component, the platform code
@@ -44,5 +44,5 @@
 //
 // No call here creates a KEK: a service must be provisioned first with
 // hkdfguard provision --service-name <name> (the tool is %ProgramFiles%\HkdfGuard\v1\hkdfguard.exe
-// on Windows and /usr/bin/hkdfguard on Linux; on macOS it keeps the name hkdfguard-v1-initialize).
+// on Windows, /usr/bin/hkdfguard on Linux, and hkdfguard beside libhkdfguard.dylib on macOS).
 package nativev1

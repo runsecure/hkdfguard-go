@@ -117,11 +117,11 @@ var linuxStatusHints = map[int32]string{
 }
 
 // macStatusHints says what a status means on macOS where that is more specific than the shared
-// meaning. The macOS tool keeps its hkdfguard-v1-initialize name.
+// meaning.
 var macStatusHints = map[int32]string{
 	errProviderUnavailable:    "this Mac has no Secure Enclave",
 	errPayloadAuthFailed:      "AES-GCM authentication failed: the payload was altered, or wrapped for another service under this KEK",
-	errKEKNotFound:            "no KEK is provisioned for this service in this keychain mode; run hkdfguard-v1-initialize provision",
+	errKEKNotFound:            "no KEK is provisioned for this service in this keychain mode; run hkdfguard provision",
 	errKEKAccessDenied:        "the keychain denied access: it is locked, there is no session to prompt in, or this process isn't allowed",
 	errKEKInvalid:             "the keychain item for this service can't be reconstructed into a key",
 	errProcessHardeningFailed: "process hardening failed: core dumps or debugger attachment could not be denied, or (with RequireProtectedSignature) the host executable's code signature still allows it - it needs the Hardened Runtime, without get-task-allow or DYLD_* entitlements",

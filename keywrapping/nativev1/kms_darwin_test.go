@@ -35,7 +35,7 @@ func TestDarwin_TheInstalledLibrary_PassesEveryCheck(t *testing.T) {
 func TestDarwin_TheProvisioningTool_IsSignedByTheTeam_ButRefused(t *testing.T) {
 	// Installed beside the library and signed by the same team: only the identifier in the code
 	// requirement tells them apart.
-	tool := filepath.Join(macSystemDirectory, "hkdfguard-v1-initialize")
+	tool := filepath.Join(macSystemDirectory, "hkdfguard")
 	if _, err := os.Stat(tool); err != nil {
 		t.Skipf("%s is not installed", tool)
 	}
@@ -78,7 +78,7 @@ func TestDarwin_ProbeDistinguishesMissingFromPresent(t *testing.T) {
 
 // --- The test service --------------------------------------------------------------------------
 
-// platformTestEnvironment asks the installed hkdfguard-v1-initialize, which sits beside the loaded
+// platformTestEnvironment asks the installed hkdfguard tool, which sits beside the loaded
 // library, whether the default test service is provisioned. The tool created the KEK, so it is on
 // the keychain item's access list and never prompts; asking the library from this process would.
 func platformTestEnvironment() testEnvironment {
@@ -101,7 +101,7 @@ func platformTestEnvironment() testEnvironment {
 	}
 }
 
-// darwinProvisioningTool is the hkdfguard-v1-initialize installed beside the library the loader
+// darwinProvisioningTool is the hkdfguard tool installed beside the library the loader
 // would choose.
 func darwinProvisioningTool() (string, error) {
 	home, _ := os.UserHomeDir()
@@ -109,7 +109,7 @@ func darwinProvisioningTool() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	tool := filepath.Join(filepath.Dir(path), "hkdfguard-v1-initialize")
+	tool := filepath.Join(filepath.Dir(path), "hkdfguard")
 	if _, err := os.Stat(tool); err != nil {
 		return "", err
 	}

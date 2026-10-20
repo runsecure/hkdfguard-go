@@ -138,8 +138,8 @@ table: -17 no KEK, -18 access denied, -10..-12 a malformed, altered or unsupport
 payload wrapped under another KEK, -32..-39 key-file refusals, and so on); a `*nativev1.StatusError`
 or `*nativev1.KeyFileError` carries the code and what it means on this platform. The installed
 files are `%ProgramFiles%\HkdfGuard\v1\HkdfGuard.dll` and `hkdfguard.exe` on Windows,
-`libhkdfguard.so.1` and `/usr/bin/hkdfguard` on Linux, and `libhkdfguard_v1.dylib` and
-`hkdfguard-v1-initialize` on macOS.
+`libhkdfguard.so.1` and `/usr/bin/hkdfguard` on Linux, and `libhkdfguard.dylib` and
+`hkdfguard` on macOS.
 
 #### Process hardening
 
@@ -238,7 +238,7 @@ library: its refusals need no KEK, and reading back a real key file uses the tes
   the KEK; a provisioning run also retires the legacy `com.hkdfguard.native.windows.test`, after
   asking - `-KeepLegacyKey` keeps it)
 
-Each checks the installed `hkdfguard` tool (`hkdfguard-v1-initialize` on macOS) against the same pins the loader applies before
+Each checks the installed `hkdfguard` tool against the same pins the loader applies before
 running it, and prints the `go test` command to run next. They provision the same KEKs as the .NET
 port's copies, so one host serves both ports' tests.
 

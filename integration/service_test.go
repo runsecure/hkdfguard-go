@@ -160,15 +160,15 @@ func probe(wrapper *nativev1.KeyWrapper) (err error, timedOut bool) {
 	}
 }
 
-// darwinServiceProvisioned asks the installed hkdfguard-v1-initialize - beside the library the
+// darwinServiceProvisioned asks the installed hkdfguard tool - beside the library the
 // loader uses: the system install when there is one, else the per-user one - whether service's
 // KEK exists. ok is false when the tool couldn't say.
 func darwinServiceProvisioned(service string) (provisioned, ok bool) {
 	home, _ := os.UserHomeDir()
 	var tool string
 	for _, directory := range []string{"/Library/Application Support/HkdfGuard/v1", filepath.Join(home, ".hkdfguard", "v1")} {
-		if _, err := os.Stat(filepath.Join(directory, "libhkdfguard_v1.dylib")); err == nil {
-			tool = filepath.Join(directory, "hkdfguard-v1-initialize")
+		if _, err := os.Stat(filepath.Join(directory, "libhkdfguard.dylib")); err == nil {
+			tool = filepath.Join(directory, "hkdfguard")
 			break
 		}
 	}

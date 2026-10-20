@@ -22,7 +22,7 @@ import (
 // Platform Crypto Provider / TPM, Linux TPM2, macOS Secure Enclave). No native library creates a
 // KEK during wrap/unwrap, so the round trips run against an operator-provisioned service:
 //
-//	hkdfguard provision --service-name hkdfguard.integrationtest   (elevated on Windows; hkdfguard-v1-initialize on macOS)
+//	hkdfguard provision --service-name hkdfguard.integrationtest   (elevated on Windows)
 //	HKDFGUARD_TEST_SERVICE=hkdfguard.integrationtest go test ./...
 //
 // Each platform's script under scripts/ provisions the same default test service,

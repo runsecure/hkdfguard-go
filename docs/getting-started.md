@@ -34,7 +34,7 @@ Two separate things are installed:
 | Part | Where it comes from | What it does |
 |---|---|---|
 | The Go modules | `go get github.com/runsecure/hkdfguard-go`, `.../cryptoprovider/aesgcm256` and `.../keywrapping/nativev1` | Everything your code calls |
-| The native library and its `hkdfguard` tool (`hkdfguard-v1-initialize` on macOS) | The HkdfGuard native package: `%ProgramFiles%\HkdfGuard\v1` on Windows, `/Library/Application Support/HkdfGuard/v1` (or `~/.hkdfguard/v1`) on macOS | Hold and use the KEK |
+| The native library and its `hkdfguard` tool | The HkdfGuard native package: `%ProgramFiles%\HkdfGuard\v1` on Windows, `/Library/Application Support/HkdfGuard/v1` (or `~/.hkdfguard/v1`) on macOS | Hold and use the KEK |
 
 The Go library loads the native library only from that location, and only after checking the
 folder's ownership and permissions and the library's code signature. It never searches `PATH`,
@@ -65,8 +65,8 @@ Check that it installed, with the same requirement the library applies when it l
 
 ```sh
 codesign --verify --strict \
-  -R='identifier "libhkdfguard_v1" and anchor apple generic and certificate 1[field.1.2.840.113635.100.6.2.6] exists and certificate leaf[field.1.2.840.113635.100.6.1.13] exists and certificate leaf[subject.OU] = "MFW3T8R8J3"' \
-  "/Library/Application Support/HkdfGuard/v1/libhkdfguard_v1.dylib" && echo OK
+  -R='identifier "libhkdfguard" and anchor apple generic and certificate 1[field.1.2.840.113635.100.6.2.6] exists and certificate leaf[field.1.2.840.113635.100.6.1.13] exists and certificate leaf[subject.OU] = "MFW3T8R8J3"' \
+  "/Library/Application Support/HkdfGuard/v1/libhkdfguard.dylib" && echo OK
 ```
 
 ## 2. Provision a KEK for your service
@@ -99,7 +99,7 @@ Sign out and back in, so your session picks up the new group.
 **macOS:** run, as the account your application will run as (not with `sudo`):
 
 ```sh
-"/Library/Application Support/HkdfGuard/v1/hkdfguard-v1-initialize" provision --service-name com.example.myapp
+"/Library/Application Support/HkdfGuard/v1/hkdfguard" provision --service-name com.example.myapp
 ```
 
 This creates the KEK in the Secure Enclave and prints its **fingerprint**: record it, `wrap` and
@@ -233,7 +233,7 @@ Each refusal is a `*nativev1.KeyFileError` naming the file, the status and what 
 comes back still wrapped: reading it opens no KEK.
 
 You create a key file once per release, or per key rotation, with the tool's `wrap` command
-(`hkdfguard wrap`; `hkdfguard-v1-initialize wrap` on macOS).
+(`hkdfguard wrap`).
 The tool reads the DEK on standard input, wraps it under the service's KEK, and writes the file
 with restricted permissions. On Windows its `--group` option names the local group whose members
 can read the file.
@@ -311,7 +311,7 @@ On macOS:
 
 ```go
 err := createKeyFile(
-	"/Library/Application Support/HkdfGuard/v1/hkdfguard-v1-initialize",
+	"/Library/Application Support/HkdfGuard/v1/hkdfguard",
 	"com.example.myapp",
 	"/Library/Application Support/MyApp/keys/v1.key",
 	"")
