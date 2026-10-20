@@ -225,7 +225,7 @@ func TestAKeyFile_WrappedUnderAnotherService_RefusesToBuild(t *testing.T) {
 	service := testServiceName(t)
 	keyFile, _ := runPipeline(t, service, map[string]string{"Secret": "value"})
 
-	_, err := buildRing(t, otherServiceName(), ringOptions{keyFile: keyFile})
+	_, err := buildRing(t, otherServiceName(t), ringOptions{keyFile: keyFile})
 
 	var statusErr *nativev1.StatusError
 	if !errors.As(err, &statusErr) {

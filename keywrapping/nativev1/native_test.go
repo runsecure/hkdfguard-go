@@ -25,8 +25,8 @@ import (
 //	hkdfguard provision --service-name hkdfguard.integrationtest   (elevated on Windows; hkdfguard-v1-initialize on macOS)
 //	HKDFGUARD_TEST_SERVICE=hkdfguard.integrationtest go test ./...
 //
-// Each platform's script under scripts/ provisions a default test service after checking the
-// installed tool: provision-windows-test-key.ps1 (elevated), provision-macos-test-key.sh, and
+// Each platform's script under scripts/ provisions the same default test service,
+// defaultTestService (com.hkdfguard.integration.test.221), after checking the installed tool: provision-windows-test-key.ps1 (elevated), provision-macos-test-key.sh, and
 // provision-linux-test-key.sh (sudo). On Windows and macOS the tests find that service by
 // themselves; on Linux they are run with the variables the script prints.
 //
@@ -54,8 +54,8 @@ var (
 	resolveTestEnvironmentOnce sync.Once
 	resolvedTestEnvironment    testEnvironment
 
-	awaitNativeAccessOnce sync.Once
-	nativeAccessErr       error
+	nativeAccessMu sync.Mutex
+	nativeAccess   = map[string]error{} // by service: the outcome of its first native call
 )
 
 // installedLibrary loads the real library, skipping the test if it isn't installed (or this build
@@ -73,7 +73,7 @@ func installedLibrary(t *testing.T) kmsLibrary {
 }
 
 // testServiceName is the service the native round trips run against, chosen once per process:
-// testServiceVariable if set, otherwise the platform's default test service when the platform can
+// testServiceVariable if set, otherwise defaultTestService when the platform can
 // confirm it is provisioned (platformTestEnvironment). Skips the test when there is none.
 func testServiceName(t *testing.T) string {
 	t.Helper()
@@ -89,20 +89,20 @@ func resolveTestEnvironment() testEnvironment {
 		return testEnvironment{service: service}
 	}
 
-	defaultService := defaultTestServices[runtime.GOOS]
 	if _, err := hostLibrary(); err != nil {
 		if errors.Is(err, ErrNotInstalled) || errors.Is(err, ErrUnsupportedPlatform) {
 			return testEnvironment{skipReason: fmt.Sprintf("the native library is not installed: %v", err)}
 		}
 		// Installed, but it couldn't even be loaded (it failed verification, say): run the tests
 		// so that failure is reported.
-		return testEnvironment{service: defaultService}
+		return testEnvironment{service: defaultTestService}
 	}
-	return platformTestEnvironment(defaultService)
+	return platformTestEnvironment()
 }
 
 // otherServiceName is the second service for the isolation tests: testOtherServiceVariable, or a
-// name that is never provisioned.
+// name that is never provisioned. A named one is a real KEK, so a wrapper for it goes through
+// awaitNativeAccess like the test service's (otherServiceWrapper).
 func otherServiceName() string {
 	if other := os.Getenv(testOtherServiceVariable); other != "" {
 		return other
@@ -122,28 +122,46 @@ func provisionedWrapper(t *testing.T) *KeyWrapper {
 	return w
 }
 
-// awaitNativeAccess makes the first native call under the test service with a deadline, once per
-// process, so a keychain dialog nobody answers (see the file comment) fails the run with a message
-// that says what to do instead of hanging it. What the call answers is left to each test.
+// otherServiceWrapper returns a KeyWrapper for otherServiceName, its first native call made through
+// awaitNativeAccess when it names a real (provisioned) service.
+func otherServiceWrapper(t *testing.T) *KeyWrapper {
+	t.Helper()
+	w, err := New(otherServiceName())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if os.Getenv(testOtherServiceVariable) != "" {
+		awaitNativeAccess(t, w)
+	}
+	return w
+}
+
+// awaitNativeAccess makes the first native call under w's service with a deadline, once per service
+// per process, so a keychain dialog nobody answers (see the file comment) fails the run with a
+// message that says what to do instead of hanging it. What the call answers is left to each test.
 func awaitNativeAccess(t *testing.T, w *KeyWrapper) {
 	t.Helper()
-	awaitNativeAccessOnce.Do(func() {
-		done := make(chan struct{})
+	nativeAccessMu.Lock()
+	defer nativeAccessMu.Unlock()
+	err, done := nativeAccess[w.service]
+	if !done {
+		finished := make(chan struct{})
 		go func() {
-			defer close(done)
+			defer close(finished)
 			_, _ = w.GenerateAndWrap(context.Background(), make([]byte, hkdfguard.MaxWrappedKeyBytes))
 		}()
 		select {
-		case <-done:
+		case <-finished:
 		case <-time.After(nativeCallTimeout):
-			nativeAccessErr = fmt.Errorf("the first native call under service '%s' has not returned after %v. "+
+			err = fmt.Errorf("the first native call under service '%s' has not returned after %v. "+
 				"On macOS the KEK's keychain item is asking for access in a dialog: click \"Always Allow\" "+
 				"(every freshly built test binary asks once). In a session with no UI the library reports "+
 				"KEK_ACCESS_DENIED (-18) instead; run the tests from a logged-in session", w.service, nativeCallTimeout)
 		}
-	})
-	if nativeAccessErr != nil {
-		t.Fatal(nativeAccessErr)
+		nativeAccess[w.service] = err
+	}
+	if err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -175,7 +193,7 @@ func TestTheInstalledLibrary_AnswersOpenFile_WithADescribedRefusal(t *testing.T)
 	// hkdfguard_open_file needs no KEK: a file that isn't there is refused with a status this
 	// platform describes - which proves the binding reached it.
 	library := installedLibrary(t)
-	path := filepath.Join(t.TempDir(), "missing", "dek.bin")
+	path := filepath.Join(keyFileDirectory(t), "missing", "dek.bin")
 
 	read, err := openKeyFile(library, path)
 
@@ -268,10 +286,7 @@ func TestNative_APayloadFromAnotherService_RevealsNothing(t *testing.T) {
 	// A second provisioned service exercises the "wrong KEK" path; without one, an unprovisioned
 	// name exercises "no KEK". Either way the unwrap must fail and reveal nothing.
 	a := provisionedWrapper(t)
-	b, err := New(otherServiceName())
-	if err != nil {
-		t.Fatal(err)
-	}
+	b := otherServiceWrapper(t)
 
 	wrapped := make([]byte, hkdfguard.MaxWrappedKeyBytes)
 	n, err := a.Wrap(context.Background(), randomDEK(t), wrapped)

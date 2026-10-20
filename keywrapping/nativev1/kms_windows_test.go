@@ -44,20 +44,20 @@ func installedWindowsLibraryPath(t *testing.T) string {
 // platformTestEnvironment asks the installed library, through its hkdfguard_kek_exists export,
 // whether the default test service is provisioned - so "not provisioned yet" (skip) is told apart
 // from a real failure (run, and fail).
-func platformTestEnvironment(defaultService string) testEnvironment {
-	status, exists, err := winKEKExists(defaultService)
+func platformTestEnvironment() testEnvironment {
+	status, exists, err := winKEKExists(defaultTestService)
 	switch {
 	case err != nil:
 		// Installed, but it couldn't be asked: run the tests so that failure is reported.
-		return testEnvironment{service: defaultService}
+		return testEnvironment{service: defaultTestService}
 	case status == statusOK && exists:
-		return testEnvironment{service: defaultService}
+		return testEnvironment{service: defaultTestService}
 	case status == statusOK || status == errKEKNotFound:
-		return testEnvironment{skipReason: fmt.Sprintf("The test KEK '%s' is not provisioned. Run scripts/provision-windows-test-key.ps1 from an elevated PowerShell, or set %s to a provisioned service.", defaultService, testServiceVariable)}
+		return testEnvironment{skipReason: fmt.Sprintf("The test KEK '%s' is not provisioned. Run scripts/provision-windows-test-key.ps1 from an elevated PowerShell, or set %s to a provisioned service.", defaultTestService, testServiceVariable)}
 	case status == errKEKAccessDenied:
-		return testEnvironment{skipReason: fmt.Sprintf("The test KEK '%s' exists, but this account may not use it. Add it to the HkdfGuardUsers group (then sign out and in), or run the tests elevated.", defaultService)}
+		return testEnvironment{skipReason: fmt.Sprintf("The test KEK '%s' exists, but this account may not use it. Add it to the HkdfGuardUsers group (then sign out and in), or run the tests elevated.", defaultTestService)}
 	default:
-		return testEnvironment{service: defaultService}
+		return testEnvironment{service: defaultTestService}
 	}
 }
 

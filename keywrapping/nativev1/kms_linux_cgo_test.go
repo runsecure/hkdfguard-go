@@ -43,8 +43,8 @@ const (
 // platformTestEnvironment: the Linux library has no non-prompting way to ask whether a KEK exists
 // that the tests rely on, so the round trips run only with the variables the provisioning script
 // prints.
-func platformTestEnvironment(defaultService string) testEnvironment {
-	return testEnvironment{skipReason: fmt.Sprintf("Set %s to a service provisioned with hkdfguard to run native integration tests. On a Linux TPM host, sudo scripts/provision-linux-test-key.sh provisions %s.", testServiceVariable, defaultService)}
+func platformTestEnvironment() testEnvironment {
+	return testEnvironment{skipReason: fmt.Sprintf("Set %s to a service provisioned with hkdfguard to run native integration tests. On a Linux TPM host, sudo scripts/provision-linux-test-key.sh provisions %s.", testServiceVariable, defaultTestService)}
 }
 
 // --- The dynamic linker -----------------------------------------------------------------------
@@ -466,7 +466,9 @@ func TestLinuxNative_AKeyFileWrappedByTheProvisioningTool_RevealsItsDEKThroughTh
 	_, service := linuxProvisionedLibrary(t)
 	requireCLI(t)
 
-	directory := t.TempDir()
+	// Not t.TempDir(): the native library refuses a key file under a group- or other-writable
+	// directory such as /tmp, so hkdfguard wraps into, and the binding reads from, a private one.
+	directory := keyFileDirectory(t)
 	dek := randomDEK(t)
 	dekFile := filepath.Join(directory, "dek")
 	keyFile := filepath.Join(directory, "key.bin")

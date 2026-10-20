@@ -18,8 +18,8 @@ import (
 )
 
 // Which native service the end-to-end tests run against - the same rules as the nativev1 module's
-// own native tests, through the public API: HKDFGUARD_TEST_SERVICE if set; otherwise the default
-// test service each platform's provisioning script creates, when the platform can confirm it is
+// own native tests, through the public API: HKDFGUARD_TEST_SERVICE if set; otherwise
+// defaultTestService, which every platform's provisioning script creates, when the platform can confirm it is
 // provisioned without prompting (macOS asks the provisioning tool, Windows asks the library);
 // otherwise skipped.
 
@@ -33,16 +33,14 @@ const (
 	statusKEKNotFound     = -17
 	statusKEKAccessDenied = -18
 
-	// nativeCallTimeout bounds the first native call: on macOS a freshly built test binary is
-	// answered with a keychain dialog (see nativev1's native_test.go).
+	// nativeCallTimeout bounds the first native call under each service: on macOS a freshly built
+	// test binary is answered with a keychain dialog (see nativev1's native_test.go).
 	nativeCallTimeout = 60 * time.Second
-)
 
-var defaultTestServices = map[string]string{
-	"windows": "com.hkdfguard.integration.test.221",
-	"darwin":  "com.hkdfguard.integration.test.221",
-	"linux":   "com.hkdfguard.integration.test.221",
-}
+	// defaultTestService is the test KEK every platform's provisioning script creates - the same
+	// name in every HkdfGuard port (keywrapping/nativev1/scripts).
+	defaultTestService = "com.hkdfguard.integration.test.221"
+)
 
 type testEnvironment struct {
 	service    string // "" when the tests are skipped
@@ -53,6 +51,9 @@ type testEnvironment struct {
 var (
 	resolveOnce sync.Once
 	resolved    testEnvironment
+
+	otherProbeOnce    sync.Once
+	otherProbeTimeout string // set when the first call under the other service did not return
 )
 
 // testServiceName is the service to run against; it skips (or fails) the test when there is none.
@@ -68,18 +69,36 @@ func testServiceName(t *testing.T) string {
 	return resolved.service
 }
 
-func otherServiceName() string {
-	if other := os.Getenv(testOtherServiceVariable); other != "" {
-		return other
+// otherServiceName is the second service for the isolation tests: testOtherServiceVariable, or a
+// name that is never provisioned. A named one is a real KEK whose first use from this binary can
+// raise a macOS keychain dialog too, so its first native call is made here, once, with the same
+// deadline as the test service's; a dialog nobody answers fails the test instead of hanging it.
+func otherServiceName(t *testing.T) string {
+	t.Helper()
+	other := os.Getenv(testOtherServiceVariable)
+	if other == "" {
+		return unprovisionedServiceName
 	}
-	return unprovisionedServiceName
+	otherProbeOnce.Do(func() {
+		wrapper, err := nativev1.New(other)
+		if err != nil {
+			return // reported by the test's own use of the service
+		}
+		if _, timedOut := probe(wrapper); timedOut {
+			otherProbeTimeout = timeoutMessage(other)
+		}
+	})
+	if otherProbeTimeout != "" {
+		t.Fatal(otherProbeTimeout)
+	}
+	return other
 }
 
 func resolveTestEnvironment() testEnvironment {
 	service := os.Getenv(testServiceVariable)
 	explicit := service != ""
 	if !explicit {
-		service = defaultTestServices[runtime.GOOS]
+		service = defaultTestService
 	}
 
 	wrapper, err := nativev1.New(service)
@@ -106,7 +125,7 @@ func resolveTestEnvironment() testEnvironment {
 	// also says whether the default service is provisioned.
 	err, timedOut := probe(wrapper)
 	if timedOut {
-		return testEnvironment{failReason: fmt.Sprintf("the first native call under service '%s' has not returned after %v. On macOS the KEK's keychain item is asking for access in a dialog: click \"Always Allow\" (every freshly built test binary asks once). In a session with no UI the library reports KEK_ACCESS_DENIED (-18) instead", service, nativeCallTimeout)}
+		return testEnvironment{failReason: timeoutMessage(service)}
 	}
 	var statusErr *nativev1.StatusError
 	if !explicit && runtime.GOOS == "windows" && errors.As(err, &statusErr) {
@@ -118,6 +137,11 @@ func resolveTestEnvironment() testEnvironment {
 		}
 	}
 	return testEnvironment{service: service}
+}
+
+// timeoutMessage says why the first native call under service has not returned, and what to do.
+func timeoutMessage(service string) string {
+	return fmt.Sprintf("the first native call under service '%s' has not returned after %v. On macOS the KEK's keychain item is asking for access in a dialog: click \"Always Allow\" (every freshly built test binary asks once). In a session with no UI the library reports KEK_ACCESS_DENIED (-18) instead", service, nativeCallTimeout)
 }
 
 // probe makes one GenerateAndWrap under wrapper's service, reporting its error, or that it did not

@@ -81,23 +81,23 @@ func TestDarwin_ProbeDistinguishesMissingFromPresent(t *testing.T) {
 // platformTestEnvironment asks the installed hkdfguard-v1-initialize, which sits beside the loaded
 // library, whether the default test service is provisioned. The tool created the KEK, so it is on
 // the keychain item's access list and never prompts; asking the library from this process would.
-func platformTestEnvironment(defaultService string) testEnvironment {
+func platformTestEnvironment() testEnvironment {
 	tool, err := darwinProvisioningTool()
 	if err != nil {
-		return testEnvironment{service: defaultService} // run the tests, so the failure is reported
+		return testEnvironment{service: defaultTestService} // run the tests, so the failure is reported
 	}
-	output, err := exec.Command(tool, "status", "--service-name", defaultService).CombinedOutput()
+	output, err := exec.Command(tool, "status", "--service-name", defaultTestService).CombinedOutput()
 	if err != nil {
-		return testEnvironment{service: defaultService}
+		return testEnvironment{service: defaultTestService}
 	}
 
 	switch {
 	case bytes.Contains(output, []byte("kek: present")):
-		return testEnvironment{service: defaultService}
+		return testEnvironment{service: defaultTestService}
 	case bytes.Contains(output, []byte("kek: absent")):
-		return testEnvironment{skipReason: fmt.Sprintf("The test KEK '%s' is not provisioned. Run scripts/provision-macos-test-key.sh, or set %s to a provisioned service.", defaultService, testServiceVariable)}
+		return testEnvironment{skipReason: fmt.Sprintf("The test KEK '%s' is not provisioned. Run scripts/provision-macos-test-key.sh, or set %s to a provisioned service.", defaultTestService, testServiceVariable)}
 	default:
-		return testEnvironment{service: defaultService}
+		return testEnvironment{service: defaultTestService}
 	}
 }
 
@@ -134,12 +134,12 @@ func TestDarwin_TheDefaultTestService_IsFoundOnlyWhenProvisioned(t *testing.T) {
 	if err != nil {
 		t.Skipf("the provisioning tool is not installed: %v", err)
 	}
-	output, err := exec.Command(tool, "status", "--service-name", defaultTestServices["darwin"]).CombinedOutput()
+	output, err := exec.Command(tool, "status", "--service-name", defaultTestService).CombinedOutput()
 	if err != nil {
 		t.Fatalf("status: %v: %s", err, output)
 	}
 
-	env := platformTestEnvironment(defaultTestServices["darwin"])
+	env := platformTestEnvironment()
 
 	if provisioned := bytes.Contains(output, []byte("kek: present")); (env.service != "") != provisioned {
 		t.Errorf("environment = %+v, but the tool reports provisioned = %v", env, provisioned)
