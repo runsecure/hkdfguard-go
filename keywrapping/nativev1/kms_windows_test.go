@@ -18,7 +18,7 @@ import (
 )
 
 // The Windows loader's checks against this machine's real filesystem, WinVerifyTrust and the
-// installed HkdfGuardV1.dll where there is one. windowspolicy_test.go checks the decisions
+// installed HkdfGuard.dll where there is one. windowspolicy_test.go checks the decisions
 // against plain data on every platform.
 
 // winInstalledPath is the one location the library is loaded from.
@@ -44,20 +44,20 @@ func installedWindowsLibraryPath(t *testing.T) string {
 // platformTestEnvironment asks the installed library, through its hkdfguard_kek_exists export,
 // whether the default test service is provisioned - so "not provisioned yet" (skip) is told apart
 // from a real failure (run, and fail).
-func platformTestEnvironment(defaultService string) testEnvironment {
-	status, exists, err := winKEKExists(defaultService)
+func platformTestEnvironment() testEnvironment {
+	status, exists, err := winKEKExists(defaultTestService)
 	switch {
 	case err != nil:
 		// Installed, but it couldn't be asked: run the tests so that failure is reported.
-		return testEnvironment{service: defaultService}
+		return testEnvironment{service: defaultTestService}
 	case status == statusOK && exists:
-		return testEnvironment{service: defaultService}
-	case status == statusOK || status == winErrKEKNotFound:
-		return testEnvironment{skipReason: fmt.Sprintf("The test KEK '%s' is not provisioned. Run scripts/provision-windows-test-key.ps1 from an elevated PowerShell, or set %s to a provisioned service.", defaultService, testServiceVariable)}
-	case status == winErrAccessDenied:
-		return testEnvironment{skipReason: fmt.Sprintf("The test KEK '%s' exists, but this account may not use it. Add it to the HkdfGuardUsers group (then sign out and in), or run the tests elevated.", defaultService)}
+		return testEnvironment{service: defaultTestService}
+	case status == statusOK || status == errKEKNotFound:
+		return testEnvironment{skipReason: fmt.Sprintf("The test KEK '%s' is not provisioned. Run scripts/provision-windows-test-key.ps1 from an elevated PowerShell, or set %s to a provisioned service.", defaultTestService, testServiceVariable)}
+	case status == errKEKAccessDenied:
+		return testEnvironment{skipReason: fmt.Sprintf("The test KEK '%s' exists, but this account may not use it. Add it to the HkdfGuardUsers group (then sign out and in), or run the tests elevated.", defaultTestService)}
 	default:
-		return testEnvironment{service: defaultService}
+		return testEnvironment{service: defaultTestService}
 	}
 }
 
@@ -192,7 +192,7 @@ func TestWindows_ATamperedCopyOfTheInstalledLibrary_IsRefused(t *testing.T) {
 func TestWindows_TheInstalledProvisioningTool_PassesTheSignerChecks_ButIsRefusedAsNotADLL(t *testing.T) {
 	// Installed beside the library and signed under the same profile: only the image check
 	// tells them apart.
-	tool := filepath.Join(filepath.Dir(installedWindowsLibraryPath(t)), "hkdfguard-v1-initialize.exe")
+	tool := filepath.Join(filepath.Dir(installedWindowsLibraryPath(t)), "hkdfguard.exe")
 	if _, err := os.Stat(tool); err != nil {
 		t.Fatalf("%s is installed with the library: %v", tool, err)
 	}
@@ -203,6 +203,70 @@ func TestWindows_TheInstalledProvisioningTool_PassesTheSignerChecks_ButIsRefused
 	requireUntrusted(t, winVerifyImageKindOf(tool), "not a DLL")
 }
 
+// winModulePath is the file Windows mapped a loaded module from.
+func winModulePath(t *testing.T, handle windows.Handle) string {
+	t.Helper()
+	buffer := make([]uint16, windows.MAX_LONG_PATH)
+	n, err := windows.GetModuleFileName(handle, &buffer[0], uint32(len(buffer)))
+	if err != nil || n == 0 {
+		t.Fatalf("GetModuleFileName = %d, %v", n, err)
+	}
+	return windows.UTF16ToString(buffer[:n])
+}
+
+func TestWindows_TheInstalledPath_IsTheFixedProgramFilesLocation(t *testing.T) {
+	// Worked out independently of the loader: %ProgramFiles%\HkdfGuard\v1\HkdfGuard.dll.
+	programFiles := os.Getenv("ProgramFiles")
+	if programFiles == "" {
+		t.Fatal("%ProgramFiles% is not set")
+	}
+	expected := filepath.Join(programFiles, "HkdfGuard", "v1", "HkdfGuard.dll")
+
+	library, err := loadPlatformLibrary()
+
+	if errors.Is(err, ErrNotInstalled) {
+		// Nothing there: the refusal names the one location it would have loaded from.
+		if !strings.Contains(strings.ToLower(err.Error()), strings.ToLower(expected)) {
+			t.Errorf("error = %v; want it to name %s", err, expected)
+		}
+		return
+	}
+	if err != nil {
+		t.Fatalf("the installed native library failed to load: %v", err)
+	}
+	win, ok := library.(*winLibrary)
+	if !ok {
+		t.Fatalf("loaded library is a %T", library)
+	}
+	if loaded := winModulePath(t, win.handle); !strings.EqualFold(loaded, expected) {
+		t.Errorf("Windows mapped %s; want %s", loaded, expected)
+	}
+}
+
+func TestWindows_LoadingTheInstalledLibraryAgain_ReturnsTheSameHandle(t *testing.T) {
+	path := installedWindowsLibraryPath(t)
+
+	first, err := winLoad(path, winExpectedPublisher)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = windows.FreeLibrary(first.(*winLibrary).handle) })
+	second, err := winLoad(path, winExpectedPublisher)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = windows.FreeLibrary(second.(*winLibrary).handle) })
+
+	firstHandle, secondHandle := first.(*winLibrary).handle, second.(*winLibrary).handle
+	if firstHandle == 0 || firstHandle != secondHandle {
+		t.Errorf("handles = %#x, %#x; want the same module", firstHandle, secondHandle)
+	}
+	// And the same module the process-wide binding uses.
+	if host, ok := installedLibrary(t).(*winLibrary); !ok || host.handle != firstHandle {
+		t.Errorf("the host library is not the module winLoad returned")
+	}
+}
+
 func TestWindows_KEKExists_AnswersForAnUnprovisionedService(t *testing.T) {
 	installedWindowsLibraryPath(t)
 
@@ -211,7 +275,7 @@ func TestWindows_KEKExists_AnswersForAnUnprovisionedService(t *testing.T) {
 	if err != nil || exists {
 		t.Errorf("winKEKExists = %d, %v, %v; want no KEK", status, exists, err)
 	}
-	if status != statusOK && windowsStatusDescriptions[status] == "" {
+	if status != statusOK && describeWindowsStatus(status) == "" {
 		t.Errorf("undescribed status %d", status)
 	}
 }

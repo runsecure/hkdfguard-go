@@ -2,7 +2,7 @@
 #
 # Provisions the Secure Enclave KEK the native integration tests use on macOS.
 #
-# Runs the installed hkdfguard-v1-initialize's "provision" command for the test service, which
+# Runs the installed hkdfguard tool's "provision" command for the test service, which
 # creates a Secure Enclave KEK for it in this account's login keychain, or finds the existing one.
 # Safe to run repeatedly. It never wraps a DEK and never touches a key file.
 #
@@ -21,7 +21,7 @@
 # The KEK's keychain item names the binary that created it (this tool) on its access list, so the
 # first native call from each freshly built test binary is answered with a keychain dialog: click
 # "Always Allow". From a session with no UI (ssh, a CI agent) the library reports
-# keychainAccessDenied (-17) instead, so run the tests from a logged-in session.
+# KEK_ACCESS_DENIED (-18) instead, so run the tests from a logged-in session.
 #
 # Usage (from keywrapping/nativev1):
 #   scripts/provision-macos-test-key.sh            # provision
@@ -32,15 +32,15 @@
 
 set -euo pipefail
 
-readonly SERVICE="com.hkdfguard.native.macos.test"
+readonly SERVICE="com.hkdfguard.integration.test.221"
 readonly TEAM_ID="MFW3T8R8J3"
 readonly SYSTEM_DIR="/Library/Application Support/HkdfGuard/v1"
 readonly USER_DIR="${HOME}/.hkdfguard/v1"
-readonly LIBRARY="libhkdfguard_v1.dylib"
-readonly TOOL_NAME="hkdfguard-v1-initialize"
+readonly LIBRARY="libhkdfguard.dylib"
+readonly TOOL_NAME="hkdfguard"
 # The loader's requirement for the library, naming the tool's identifier instead; keep it in step
 # with macCodeRequirement in macpolicy.go (scripts_test.go checks).
-readonly REQUIREMENT='identifier "hkdfguard-v1-initialize" and anchor apple generic and certificate 1[field.1.2.840.113635.100.6.2.6] exists and certificate leaf[field.1.2.840.113635.100.6.1.13] exists and certificate leaf[subject.OU] = "MFW3T8R8J3"'
+readonly REQUIREMENT='identifier "hkdfguard" and anchor apple generic and certificate 1[field.1.2.840.113635.100.6.2.6] exists and certificate leaf[field.1.2.840.113635.100.6.1.13] exists and certificate leaf[subject.OU] = "MFW3T8R8J3"'
 
 die() { echo "error: $*" >&2; exit 1; }
 note() { echo "==> $*"; }

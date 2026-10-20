@@ -1,11 +1,12 @@
-# `hkdfguard-v1-initialize` reference
+# `hkdfguard` tool reference
 
-`hkdfguard-v1-initialize` is installed with each platform's native HkdfGuard package. It does the
-jobs the Go library deliberately can't:
+The `hkdfguard` tool is installed with each platform's native HkdfGuard package: as
+`hkdfguard.exe` on Windows, `/usr/bin/hkdfguard` on Linux, and `hkdfguard` beside
+`libhkdfguard.dylib` on macOS. It does the jobs the Go library deliberately can't:
 
 - **`provision`** creates a service's KEK. Wrapping and unwrapping never create one.
 - **`wrap`** turns a DEK into a key file.
-- On macOS, **`status`** reports a KEK and **`retire`** deletes one.
+- On Windows and macOS, **`status`** reports a KEK and **`retire`** deletes one.
 
 The Windows section was taken from the tool's own `--help` output and checked against its
 behavior; the macOS section from the installed tool's `--help` output and observed behavior. The
@@ -20,12 +21,19 @@ service provisioned once serves both.
 
 ## Windows
 
-Installed at `%ProgramFiles%\HkdfGuard\v1\hkdfguard-v1-initialize.exe`, beside `HkdfGuardV1.dll`.
+Installed at `%ProgramFiles%\HkdfGuard\v1\hkdfguard.exe`, beside `HkdfGuard.dll`.
 
 ```text
-hkdfguard-v1-initialize provision --service-name|-sn <name>
-hkdfguard-v1-initialize wrap --key-file-path|-kf <path> --service-name|-sn <name> --dek-stdin --group|-g <name> [--force|-f]
+hkdfguard provision --service-name|-sn <name>
+hkdfguard wrap --key-file-path|-kf <path> --service-name|-sn <name> (--dek-stdin | --dek-file <path>)
+     [--group|-g <name>] [--force|-f]
+hkdfguard retire --service-name|-sn <name> (--fingerprint|-fp <hex> | --corrupt)
+     [--provider tpm|software]
+hkdfguard status --service-name|-sn <name>
 ```
+
+> **TODO (maintainer):** the sections below predate `retire`, `status`, `--dek-file` and the
+> optional `--group`; document them from the tool's `--help`.
 
 `--help` after a command shows that command's help. `--help` alone, or no arguments, shows the
 summary above.
@@ -59,7 +67,7 @@ letter, digit or `.`; it doesn't start with `.` and doesn't contain `..`. For ex
 ### `provision`
 
 ```text
-hkdfguard-v1-initialize provision --service-name|-sn <name>
+hkdfguard provision --service-name|-sn <name>
 ```
 
 Makes sure the service's machine-wide KEK exists and passes verification. If it is missing,
@@ -87,16 +95,16 @@ Failures you may see:
 
 | Status | Meaning | What to do |
 |---|---|---|
-| -13 | Not authorized, for example not elevated | Run from an elevated prompt |
-| -3 | The key storage provider or key couldn't be opened or created | Check the TPM is enabled, or the storage policy |
-| -9 | `KeyStoragePolicy` is invalid | Fix the policy value |
-| -10 | A `KeyUseGroups` entry is unresolvable, not a group, or over-broad | Fix the policy entry |
-| -14 | The existing KEK's access list is missing, lacks SYSTEM or Administrators, or grants an over-broad principal | Investigate before re-provisioning: the KEK may have been tampered with |
+| -18 | Not authorized, for example not elevated | Run from an elevated prompt |
+| -4 | The key storage provider or key couldn't be opened or created | Check the TPM is enabled, or the storage policy |
+| -9 | A policy value under `HKLM\Software\Policies\HkdfGuard` (such as `KeyStoragePolicy`) is invalid | Fix the policy value |
+| -64 | A `KeyUseGroups` entry is unresolvable, not a group, not host-local, or over-broad | Fix the policy entry |
+| -19 | The existing KEK's access list is missing, lacks SYSTEM or Administrators, or grants an over-broad principal | Investigate before re-provisioning: the KEK may have been tampered with |
 
 ### `wrap`
 
 ```text
-hkdfguard-v1-initialize wrap --key-file-path|-kf <path> --service-name|-sn <name> --dek-stdin --group|-g <name> [--force|-f]
+hkdfguard wrap --key-file-path|-kf <path> --service-name|-sn <name> --dek-stdin --group|-g <name> [--force|-f]
 ```
 
 Wraps a DEK under the service's existing KEK and writes the result to a key file. It never creates
@@ -129,14 +137,16 @@ characters.
 >   `aesgcm256.PipelineDataProtector`.
 > - Keep key files in a folder only administrators can write to. A key file is not a secret, but
 >   anyone who can replace it decides which key your application encrypts new data with. The Go
->   library refuses a key file its group or other users can write.
+>   library reads key files through the native library, which refuses one that any account other
+>   than SYSTEM, Administrators, TrustedInstaller or the reading account could write or replace,
+>   or that is reached through a link, junction, 8.3 short name or network path.
 
 Failures you may see:
 
 | Status | Meaning | What to do |
 |---|---|---|
-| -12 | No KEK is provisioned for this service | Run `provision` first |
-| -13 | The KEK exists, but this account may not use it | Run as an account in `HkdfGuardUsers` or a `KeyUseGroups` group |
+| -17 | No KEK is provisioned for this service | Run `provision` first |
+| -18 | The KEK exists, but this account may not use it | Run as an account in `HkdfGuardUsers` or a `KeyUseGroups` group |
 | -1 | Invalid argument, for example a DEK that isn't 32 bytes | Check the standard input is 44 base64 characters |
 
 > **TODO (maintainer):** add the error `wrap` reports for a `--group` that doesn't exist or isn't
@@ -144,23 +154,24 @@ Failures you may see:
 
 ### Status codes
 
-The tool reports the native library's status codes. The full list, with meanings, is the
-`windowsStatusDescriptions` table in
-[`keywrapping/nativev1/status.go`](../../keywrapping/nativev1/status.go). The Go library reports
-the same codes in its `*nativev1.StatusError` messages.
+The tool reports the native library's status codes, which are the same on Windows, Linux and
+macOS. The full list, with meanings, is the `statusDescriptions` table in
+[`keywrapping/nativev1/status.go`](../../keywrapping/nativev1/status.go) (with each platform's
+hints beside it). The Go library reports the same codes in its `*nativev1.StatusError` and
+`*nativev1.KeyFileError` messages.
 
 ## macOS
 
 Installed system-wide at `/Library/Application Support/HkdfGuard/v1`, or per user at
-`~/.hkdfguard/v1`, beside `libhkdfguard_v1.dylib`. The KEK is a Secure Enclave key, so it needs
+`~/.hkdfguard/v1`, beside `libhkdfguard.dylib`. The KEK is a Secure Enclave key, so it needs
 Apple silicon and macOS 13 or later.
 
 ```text
-hkdfguard-v1-initialize provision --service-name|-sn <name>
-hkdfguard-v1-initialize wrap --key-file-path|-kf <path> --service-name|-sn <name> \
+hkdfguard provision --service-name|-sn <name>
+hkdfguard wrap --key-file-path|-kf <path> --service-name|-sn <name> \
                           ( --dek-stdin | --dek-file <path> ) [--fingerprint|-fp <hex>] [--force|-f]
-hkdfguard-v1-initialize retire --service-name|-sn <name> ( --fingerprint|-fp <hex> | --corrupt )
-hkdfguard-v1-initialize status --service-name|-sn <name>
+hkdfguard retire --service-name|-sn <name> ( --fingerprint|-fp <hex> | --corrupt )
+hkdfguard status --service-name|-sn <name>
 ```
 
 `--help`, or no arguments, shows the summary above. Every command shares one usage text.
@@ -196,18 +207,18 @@ process's own code-signing entitlements, never from configuration:
   entitlement - a bare executable such as this tool, or a Go program that loads the library.
   Items live in the login keychain, protected by its lock and by a per-item access list that
   names the binary that created the item. Any other binary gets an interactive prompt in a
-  logged-in session ("Always Allow" adds it to the list), or status -17 where there is no UI.
+  logged-in session ("Always Allow" adds it to the list), or status -18 where there is no UI.
 - **data-protection** (`keychain: data-protection`): the process is a Team-signed app bundle with
   that entitlement. Access is decided from the signed identity: no prompts, no per-item lists.
 
 The two keychains are disjoint: provision a service in the mode its consumers run in, or they
-report -10 (no KEK). Every KEK is created usable only while the device is unlocked, and never
+report -17 (no KEK). Every KEK is created usable only while the device is unlocked, and never
 leaves the device: no backup or restore carries it.
 
 ### `provision`
 
 ```text
-hkdfguard-v1-initialize provision --service-name|-sn <name>
+hkdfguard provision --service-name|-sn <name>
 ```
 
 Creates the Secure Enclave KEK for the service if it doesn't exist yet, and prints the KEK's
@@ -218,7 +229,7 @@ in legacy mode the item is created in that account's login keychain.
 ### `wrap`
 
 ```text
-hkdfguard-v1-initialize wrap --key-file-path|-kf <path> --service-name|-sn <name> \
+hkdfguard wrap --key-file-path|-kf <path> --service-name|-sn <name> \
                           ( --dek-stdin | --dek-file <path> ) [--fingerprint|-fp <hex>] [--force|-f]
 ```
 
@@ -244,11 +255,11 @@ fingerprint of the KEK the payload was wrapped under.
 ### `retire`
 
 ```text
-hkdfguard-v1-initialize retire --service-name|-sn <name> ( --fingerprint|-fp <hex> | --corrupt )
+hkdfguard retire --service-name|-sn <name> ( --fingerprint|-fp <hex> | --corrupt )
 ```
 
 Deletes the KEK for the service, only if its fingerprint matches, or, with `--corrupt`, only if
-the library reports the item as corrupt (-11) and the Secure Enclave is proven usable in this
+the library reports the item as corrupt (-19) and the Secure Enclave is proven usable in this
 session, so a healthy KEK that merely couldn't be loaded right now is never mistaken for a corrupt
 one. The only command that deletes keys. **Everything wrapped under that KEK becomes permanently
 unrecoverable**: migrate to a new service name first.
@@ -256,7 +267,7 @@ unrecoverable**: migrate to a new service name first.
 ### `status`
 
 ```text
-hkdfguard-v1-initialize status --service-name|-sn <name>
+hkdfguard status --service-name|-sn <name>
 ```
 
 Read-only: never creates or deletes anything. Reports the keychain mode, whether a KEK exists for
@@ -274,24 +285,24 @@ test suite tells whether a test service is provisioned.
 
 ### Status codes
 
-The `macStatusDescriptions` table in
-[`keywrapping/nativev1/status.go`](../../keywrapping/nativev1/status.go) lists every code. The
-ones you are most likely to meet: -10 no KEK for this service (run `provision`), -16 the payload
-was wrapped under a different KEK, -17 the keychain denied access (locked, or no UI session for the
-prompt), -6 the payload was altered.
+The `statusDescriptions` table in
+[`keywrapping/nativev1/status.go`](../../keywrapping/nativev1/status.go) lists every code, shared
+with Windows and Linux; `macStatusHints` beside it adds the macOS meanings. The ones you are most
+likely to meet: -17 no KEK for this service (run `provision`), -16 the payload was wrapped under a
+different KEK, -18 the keychain denied access (locked, or no UI session for the prompt), -11 the
+payload was altered.
 
 ## Linux
 
 The native library is published for Ubuntu 24.04 on amd64 as the `libhkdfguard1` package
 (`hkdfguard-libs` on RPM distributions is planned), installed to `/usr/lib/<multiarch>/` or
-`/usr/lib64/`, with `hkdfguard-v1-initialize` at `/usr/bin/hkdfguard-v1-initialize` from the
-`hkdfguard` package. The KEK is a TPM 2.0 key.
+`/usr/lib64/`, with the tool at `/usr/bin/hkdfguard` from the `hkdfguard` package. The KEK is a TPM 2.0 key.
 
 What is known so far, from `keywrapping/nativev1/scripts/provision-linux-test-key.sh` and the
 Linux integration tests:
 
 - The package installs no policy and no TPM derivation secret, so on a fresh host every wrap fails
-  with "no KEK is provisioned" (-9) until root creates `/etc/hkdfguard/tpm.derivation-secret` (32
+  with "no KEK is provisioned" (-17) until root creates `/etc/hkdfguard/tpm.derivation-secret` (32
   random bytes, readable by the service's group) and writes `/etc/hkdfguard/policy.toml`.
 - With `tpm.require_pinned_names = true` in the policy, only services whose TPM Name is listed
   under `[tpm.pinned_names]` have a KEK; `provision` prints the Name an unlisted service would get.
@@ -300,5 +311,5 @@ Linux integration tests:
 - The account running the application must be in the `tss` group to open `/dev/tpmrm0`.
 
 > **TODO (maintainer):** paste the Linux `--help` output and fill in this section to match the
-> Windows one: commands, options, exit codes, the policy file's full schema, and the status codes
-> (`linuxStatusDescriptions` in `keywrapping/nativev1/status.go`).
+> Windows one: commands, options, exit codes, the policy file's full schema, and the Linux hints
+> on the shared status codes (`linuxStatusHints` in `keywrapping/nativev1/status.go`).

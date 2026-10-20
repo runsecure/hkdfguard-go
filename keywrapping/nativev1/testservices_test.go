@@ -18,10 +18,8 @@ const (
 	unprovisionedServiceName = "hkdfguard.integrationtest.unprovisioned"
 )
 
-// defaultTestServices are the test KEKs each platform's provisioning script creates, used when
-// testServiceVariable is unset and the platform can tell, without prompting, that the KEK exists.
-var defaultTestServices = map[string]string{
-	"windows": "com.hkdfguard.native.windows.test", // scripts/provision-windows-test-key.ps1
-	"darwin":  "com.hkdfguard.native.macos.test",   // scripts/provision-macos-test-key.sh
-	"linux":   "com.hkdfguard.native.linux.test",   // scripts/provision-linux-test-key.sh
-}
+// defaultTestService is the test KEK every platform's provisioning script creates - the same name
+// in every HkdfGuard port - used when testServiceVariable is unset and the platform can tell,
+// without prompting, that the KEK exists. scripts/provision-windows-test-key.ps1,
+// provision-macos-test-key.sh and provision-linux-test-key.sh each provision it.
+const defaultTestService = "com.hkdfguard.integration.test.221"

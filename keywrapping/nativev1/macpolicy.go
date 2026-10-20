@@ -28,7 +28,7 @@ import (
 //     verified path is unloaded and refused.
 
 const (
-	macFileName               = "libhkdfguard_v1.dylib"
+	macFileName               = "libhkdfguard.dylib"
 	macSystemDirectory        = "/Library/Application Support/HkdfGuard/v1"
 	macUserDirectoryUnderHome = ".hkdfguard/v1"
 	macSystemPath             = macSystemDirectory + "/" + macFileName
@@ -40,8 +40,8 @@ const (
 	// macCodeRequirement matches the release build's own designated requirement: this library's
 	// identifier, signed with a Developer ID Application certificate (not Apple Development)
 	// issued to the HkdfGuard team. So a development build, or any other binary the team signs
-	// (such as hkdfguard-v1-initialize), is refused.
-	macCodeRequirement = `identifier "libhkdfguard_v1" and anchor apple generic` +
+	// (such as the hkdfguard tool), is refused.
+	macCodeRequirement = `identifier "libhkdfguard" and anchor apple generic` +
 		` and certificate 1[field.1.2.840.113635.100.6.2.6] exists` + // Developer ID CA
 		` and certificate leaf[field.1.2.840.113635.100.6.1.13] exists` + // Developer ID Application leaf
 		` and certificate leaf[subject.OU] = "` + macTeamID + `"`

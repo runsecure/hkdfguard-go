@@ -4,10 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
-	"os"
-	"runtime"
 	"slices"
 	"time"
 
@@ -36,17 +33,15 @@ const (
 	MaxKeyRefreshInterval = 300 * time.Second
 )
 
-// keyFileForbiddenPerm is the group- and other-write bits a key file must not have.
-const keyFileForbiddenPerm = 0o022
-
 var (
 	// ErrInvalidConfig reports a Config that is missing something Build needs, or has a value out
 	// of range.
 	ErrInvalidConfig = errors.New("dek: invalid key ring configuration")
 
 	// ErrInvalidKeyFile reports a key file that is not a regular file, is writable by its group
-	// or by others, or is empty or larger than hkdfguard.MaxWrappedKeyBytes.
-	ErrInvalidKeyFile = errors.New("dek: invalid key file")
+	// or by others, or is empty or larger than hkdfguard.MaxWrappedKeyBytes - or that the
+	// KeyWrapper reading it refused as not a wrapped key. It is hkdfguard.ErrInvalidKeyFile.
+	ErrInvalidKeyFile = hkdfguard.ErrInvalidKeyFile
 )
 
 // Config describes the KeyRing Build assembles. One KeyWrapper is shared by every key - it is bound
@@ -79,7 +74,9 @@ type Config struct {
 
 	// KeyFiles maps a version to the path of its wrapped DEK file. Each must be a regular file
 	// that only its owner can write (on Unix, no group or other write bit): a principal who could
-	// rewrite it, and reach the KEK, could substitute a DEK they know.
+	// rewrite it, and reach the KEK, could substitute a DEK they know. Each file is read through
+	// KeyWrapper when it implements hkdfguard.KeyFileReader (the native key wrapper does, applying
+	// the native library's own checks), and with hkdfguard.ReadWrappedKeyFile otherwise.
 	KeyFiles map[int]string
 
 	// EphemeralKeys are versions whose DEK is generated at Build time and never written to disk.
@@ -189,7 +186,9 @@ func populate(ctx context.Context, ring *KeyRing, config *Config) error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		wrapped, err := readKeyFile(config.KeyFiles[version])
+		// Read through the key wrapper when it reads its own key files: a native KMS reads them
+		// with its own checks on who could have written them.
+		wrapped, err := hkdfguard.ReadKeyFile(ctx, config.KeyWrapper, config.KeyFiles[version])
 		if err != nil {
 			return err
 		}
@@ -224,41 +223,4 @@ func addOwned(ctx context.Context, ring *KeyRing, version int, provider hkdfguar
 		return err
 	}
 	return nil
-}
-
-// readKeyFile reads a wrapped DEK, refusing anything but a regular file only its owner can
-// write, an empty file, or one over hkdfguard.MaxWrappedKeyBytes. It never reads more than one
-// byte past the limit, so a wrong path (a log, a device) can't make startup allocate an unbounded
-// buffer. The checks are made on the opened file, so they describe what is read, not a path that
-// may have changed in between.
-func readKeyFile(path string) ([]byte, error) {
-	file, err := os.Open(path)
-	if err != nil {
-		return nil, err
-	}
-	defer file.Close()
-
-	info, err := file.Stat()
-	if err != nil {
-		return nil, err
-	}
-	if !info.Mode().IsRegular() {
-		return nil, fmt.Errorf("%w: key file '%s' is not a regular file", ErrInvalidKeyFile, path)
-	}
-	// Windows reports no meaningful Unix permission bits; its ACLs are the file owner's to set.
-	if runtime.GOOS != "windows" && info.Mode().Perm()&keyFileForbiddenPerm != 0 {
-		return nil, fmt.Errorf("%w: key file '%s' is writable by its group or by others (mode %04o); only its owner may write it", ErrInvalidKeyFile, path, info.Mode().Perm())
-	}
-
-	buffer := make([]byte, hkdfguard.MaxWrappedKeyBytes+1)
-	n, err := io.ReadFull(file, buffer)
-	switch {
-	case err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF):
-		return nil, err
-	case n == 0:
-		return nil, fmt.Errorf("%w: key file '%s' is empty", ErrInvalidKeyFile, path)
-	case n > hkdfguard.MaxWrappedKeyBytes:
-		return nil, fmt.Errorf("%w: key file '%s' is larger than %d bytes (hkdfguard.MaxWrappedKeyBytes); a wrapped key never is", ErrInvalidKeyFile, path, hkdfguard.MaxWrappedKeyBytes)
-	}
-	return buffer[:n:n], nil
 }

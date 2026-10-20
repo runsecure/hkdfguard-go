@@ -8,14 +8,14 @@ Secure Enclave key on macOS, a Platform Crypto Provider key on Windows. Values, 
 and names are byte-identical between the ports, so one deployment serves both.
 
 **Documentation:** [docs/](docs/README.md) - a [getting-started tutorial](docs/getting-started.md)
-and the [`hkdfguard-v1-initialize` reference](docs/reference/cli.md).
+and the [`hkdfguard` tool reference](docs/reference/cli.md).
 
 ## Packages
 
 ### `hkdfguard` (module root)
 
 Go port of `HkdfGuard.Abstractions`: the interfaces every implementation satisfies
-(`KeyWrapper`, `CryptoProviderFactory`/`CryptoProvider`, `DataEncryptionKey`, `KeyRing`,
+(`KeyWrapper` and its optional `KeyFileReader`, `CryptoProviderFactory`/`CryptoProvider`, `DataEncryptionKey`, `KeyRing`,
 `EncryptedFormatProvider`, `DataProtector`, `PipelineDataProtector`, `ProtectedCache`), the shared
 cross-port rules (`ConfigurationPurpose`/`ConfigurationAAD`, `ValidateServiceName`), limits and
 defaults, and the `Wipe`/`IsZero` secret-memory helpers. Implementation packages import this one
@@ -60,6 +60,12 @@ ring, err := dek.Build(ctx, dek.Config{
 })
 protector, err := ring.CreateProtector("orders")
 ```
+
+`Build` reads each key file through its `KeyWrapper` when the wrapper implements
+`hkdfguard.KeyFileReader` - the native key wrapper does, so the native library checks the file
+(see below) - and with `hkdfguard.ReadWrappedKeyFile` otherwise. Either way a file that isn't a
+wrapped key fails with an error wrapping `hkdfguard.ErrInvalidKeyFile` (`dek.ErrInvalidKeyFile` is
+the same sentinel).
 
 Settings can also come from a file. `dek.Options` has the field names and units of the .NET
 port's `HkdfGuardOptions`, so one `appsettings.json` section configures both ports:
@@ -110,12 +116,77 @@ use the cipher-neutral errors in `hkdfguard` (`ErrAuthenticationFailed`, `ErrKey
 Go port of `HkdfGuard.KeyWrapping.V1`: a `hkdfguard.KeyWrapper` over the OS's native HkdfGuard KMS
 library (TPM2 on Linux, Secure Enclave on macOS, Platform Crypto Provider on Windows). The library
 is loaded only from its fixed install location, after verifying path ownership and permissions,
-the code signature (Authenticode / Developer ID) or pinned SHA-256 (Linux), and the dynamic
-linker's environment.
+the code signature (Authenticode / Developer ID), and the dynamic linker's environment. The Linux
+library is not content-pinned; verify a release with Sigstore/cosign (`gh attestation verify`)
+before installing it.
 
 ```go
 wrapper, err := nativev1.New("com.example.orders") // service must be provisioned first
 ```
+
+It also reads key files through the native library's `hkdfguard_open_file` (`KeyWrapper.ReadKeyFile`,
+which `dek.Build` uses), so the bytes come back still wrapped after the native checks: the file's
+size and format; that it doesn't hold what looks like an *unwrapped* key (32 raw bytes, or its hex
+or base64 - treat that as a key exposure); and that no account other than an administrator or the
+reader could have written or replaced it, nor redirected its path through a link, junction, 8.3
+short name or network path. A refusal is a `*nativev1.KeyFileError` naming the file, the status
+and its meaning, matchable with `errors.Is` against `fs.ErrNotExist`, `fs.ErrPermission` or
+`hkdfguard.ErrInvalidKeyFile`.
+
+Every platform's native library returns the same status codes (the header's `HKDFGUARD_ERR_*`
+table: -17 no KEK, -18 access denied, -10..-12 a malformed, altered or unsupported payload, -16 a
+payload wrapped under another KEK, -32..-39 key-file refusals, and so on); a `*nativev1.StatusError`
+or `*nativev1.KeyFileError` carries the code and what it means on this platform. The installed
+files are `%ProgramFiles%\HkdfGuard\v1\HkdfGuard.dll` and `hkdfguard.exe` on Windows,
+`libhkdfguard.so.1` and `/usr/bin/hkdfguard` on Linux, and `libhkdfguard.dylib` and
+`hkdfguard` on macOS.
+
+#### Process hardening
+
+DEKs pass through your process's memory, so a crash dump, or another process of the same user
+attaching a debugger or reading that memory, could recover them. `nativev1.HardenProcess()` calls
+the native library's `hkdfguard_harden_process_with_flags` to close that off, on every platform:
+
+| Platform | What it does |
+|---|---|
+| Windows | Crash reports leave out the heap, and the process's and its threads' access lists are replaced so only SYSTEM can read or write its memory, inject threads or duplicate its handles. Its own account keeps only query, synchronize and terminate. |
+| Linux | Core dumps off (hard limit included), and the process marked non-dumpable, which also stops ptrace and `/proc/<pid>/mem` access by the same user. |
+| macOS | Core dumps off and debugger attachment denied. Whether code can be injected depends on the host executable's code signature, which the library checks but can't change. |
+
+Neither the native library nor any machine policy does this for you: it changes process-wide
+state your application owns, so it is opt-in. Call it once, early in startup - the first thing in
+`main` on Windows, and after any privilege drop on Linux:
+
+```go
+if err := nativev1.HardenProcess(); err != nil {
+    log.Fatal(err) // a *nativev1.StatusError if the hardening failed: don't start
+}
+```
+
+Debuggers, crash dumps and core dumps stop working for the process. It is a same-user barrier: it
+does not stop administrators, root, SYSTEM, `SeDebugPrivilege`, `CAP_SYS_PTRACE` or the kernel,
+and it does not keep memory out of swap, the page file or hibernation files.
+
+`nativev1.HardenProcessWithOptions(nativev1.RequireProtectedSignature)` is the strict form the
+native command-line tools use: it fails unless no other process of the same user can debug or
+inject into this one. `HardenProcessOptions` is a bitmask; a bit this package doesn't define is
+refused before any native call.
+
+- **Windows:** it also closes threads started later, and everything else the process creates
+  afterwards without its own security descriptor (child processes, named pipes, named events), to
+  its own account. Use it in a service that shares no objects with other processes by name.
+- **macOS:** it fails unless the host executable is signed with the Hardened Runtime and without
+  the `get-task-allow` or `DYLD_*` entitlements, so unsigned or ad-hoc signed binaries (`go run`,
+  `go test`, a plain `go build`) can't use it. Without it, a weak signature is only logged.
+- **Linux:** it adds nothing; the plain call already guarantees it.
+
+**Go on Windows:** the plain call closes the threads that exist when it runs, and threads started
+later keep the default access, which lets other processes of the same user read and change their
+registers. A Go program can't call it "before starting threads": the runtime starts OS threads
+before `main` (even before `init` functions run), and keeps starting more whenever it needs them -
+a goroutine blocked in a system call, more runnable goroutines, the garbage collector. Calling it
+first thing in `main` covers the threads that exist then, not the ones the runtime adds later, so
+**use `RequireProtectedSignature` for a Windows service**: it closes later threads too.
 
 It is its own module (`github.com/runsecure/hkdfguard-go/keywrapping/nativev1`) because macOS and
 Linux builds need cgo (`CGO_ENABLED=1` and a C toolchain); Windows needs neither. See
@@ -139,18 +210,35 @@ scripts/check.sh                       # every module
 scripts/check.sh keywrapping/nativev1  # one module
 ```
 
+### Platform native integration suites
+
+Each platform has its own suite against the real native library, alongside the cross-platform
+round trips in `keywrapping/nativev1/native_test.go` and the end-to-end tests in `integration`. All
+of them skip (with the reason) rather than pass where what they need is missing:
+
+| Platform | Files | Gated on |
+|---|---|---|
+| Linux | `kms_linux_test.go`, `kms_linux_cgo_test.go` (`TestLinuxSystem_*`, `TestLinuxNative_*`) | `linux`, and `cgo` for the dynamic-linker checks and native calls. The loader's system checks run on any Linux host (libc stands in for the library); installed-library checks skip without the `libhkdfguard1` package (and one checks that, without it, loading reports it not installed); the native contract needs `HKDFGUARD_TEST_SERVICE` (and `HKDFGUARD_TEST_SERVICE_OTHER`) |
+| macOS | `kms_darwin_test.go` (`TestDarwin_*`) | `darwin && cgo`; skips without the installed library or the provisioning tool, and the round trips without the provisioned test service |
+| Windows | `kms_windows_test.go` (`TestWindows_*`), `keyfile_windows_test.go` (`TestWindowsKeyFile_*`), `harden_windows_test.go` (`TestWindowsNative_*`) | `windows`; the loader's refusals of planted, unsigned, junctioned and non-PE files always run; installed-library checks skip without `%ProgramFiles%\HkdfGuard\v1\HkdfGuard.dll`; key-file refusals need only the library; real key files and round trips need the provisioned test KEK |
+
+The process-hardening tests (Linux and Windows) also need `HKDFGUARD_TEST_PROCESS_HARDENING=1` (below).
+
 The native key wrapper's tests make real calls against a provisioned service. They are reported
 as skipped, never passed, unless the test service exists: on Windows and macOS the tests find it
 by themselves (through the library's `hkdfguard_kek_exists` export, and the provisioning tool's
 `status` command, respectively); on Linux, and for any other service, set `HKDFGUARD_TEST_SERVICE`.
 `HKDFGUARD_TEST_SERVICE_OTHER` names a second provisioned service for the cross-service isolation
-tests. To provision a test host, run from `keywrapping/nativev1`:
+tests. On Windows the key-file tests (`keyfile_windows_test.go`) also run against the installed
+library: its refusals need no KEK, and reading back a real key file uses the test service. To provision a test host, run from `keywrapping/nativev1`:
 
-- Linux: `sudo scripts/provision-linux-test-key.sh` (TPM-backed test KEKs and policy; `--remove` undoes it)
+- Linux: `sudo scripts/provision-linux-test-key.sh` (the TPM-backed test KEK and policy; `--remove` undoes it)
 - macOS: `scripts/provision-macos-test-key.sh` as the account that runs the tests (`--remove` retires the KEK)
-- Windows: `./scripts/provision-windows-test-key.ps1` from an elevated PowerShell
+- Windows: `./scripts/provision-windows-test-key.ps1` from an elevated PowerShell (`-Remove` retires
+  the KEK; a provisioning run also retires the legacy `com.hkdfguard.native.windows.test`, after
+  asking - `-KeepLegacyKey` keeps it)
 
-Each checks the installed `hkdfguard-v1-initialize` against the same pins the loader applies before
+Each checks the installed `hkdfguard` tool against the same pins the loader applies before
 running it, and prints the `go test` command to run next. They provision the same KEKs as the .NET
 port's copies, so one host serves both ports' tests.
 
@@ -161,13 +249,22 @@ cd integration && CGO_ENABLED=1 go test ./...            # end to end across the
 
 With a service, the Linux run also checks the exact Linux status codes, the native library's own
 service-name and length checks, that a failed unwrap zeroes the caller's buffer, that tampering
-anywhere in a payload is refused, and that a key file written by `hkdfguard-v1-initialize wrap`
-unwraps through the wrapper; `HKDFGUARD_TEST_PROCESS_HARDENING=1` adds the test that hardens the
-test process itself (`HardenProcess`).
+anywhere in a payload is refused, and that a key file written by `hkdfguard wrap`
+unwraps through the wrapper.
+
+`HKDFGUARD_TEST_PROCESS_HARDENING=1` adds the tests that harden the test process itself, on Linux
+(the dumpable flag and core dump limit) and Windows (the process is no longer open to its own
+account for memory reads; in strict mode neither are threads started afterwards). Run each in a
+test binary of its own, since what one does to the process outlives it:
+
+```sh
+HKDFGUARD_TEST_PROCESS_HARDENING=1 go test -run 'HardenProcess_ClosesTheProcessToItsOwnAccount$|DisablesCoreDumps' -v
+HKDFGUARD_TEST_PROCESS_HARDENING=1 go test -run 'HardenProcess_WithRequireProtectedSignature' -v   # Windows
+```
 
 **macOS:** in the native library's legacy keychain mode the KEK's access list names the binary
 that created it, so the first native call from each freshly built test binary is answered with a
-keychain dialog in a logged-in session - click "Always Allow" - and with status -17 where there is
+keychain dialog in a logged-in session - click "Always Allow" - and with status -18 where there is
 no UI. The tests fail with a message saying so after 60 seconds rather than hang; this is a
 property of the native library, shared with the .NET port.
 
