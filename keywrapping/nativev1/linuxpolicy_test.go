@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"maps"
-	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -299,33 +298,6 @@ func TestLinuxParentOf_WalksUpToRoot(t *testing.T) {
 	for path, parent := range map[string]string{"/": "/", "/usr": "/", "/usr/lib": "/usr"} {
 		if got := linuxParentOf(path); got != parent {
 			t.Errorf("linuxParentOf(%q) = %q, want %q", path, got, parent)
-		}
-	}
-}
-
-// --- Content --------------------------------------------------------------------------------
-
-func TestLinuxVerifyContent(t *testing.T) {
-	releases := map[string]string{strings.Repeat("a", 64): "test release"}
-	hashOf := func(hash string) func(string) (string, error) {
-		return func(string) (string, error) { return hash, nil }
-	}
-
-	if err := linuxVerifyContent(linuxLibrary, hashOf(strings.Repeat("a", 64)), releases); err != nil {
-		t.Errorf("a known release: %v", err)
-	}
-	other := strings.Repeat("b", 64)
-	requireUntrusted(t, linuxVerifyContent(linuxLibrary, hashOf(other), releases), other, linuxLibrary)
-}
-
-func TestLinuxEveryKnownRelease_IsALowercaseSHA256(t *testing.T) {
-	if len(linuxKnownReleases) == 0 {
-		t.Fatal("no known releases")
-	}
-	sha256Hex := regexp.MustCompile(`^[0-9a-f]{64}$`)
-	for hash, description := range linuxKnownReleases {
-		if !sha256Hex.MatchString(hash) || strings.TrimSpace(description) == "" {
-			t.Errorf("%q: %q", hash, description)
 		}
 	}
 }

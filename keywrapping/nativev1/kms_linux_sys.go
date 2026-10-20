@@ -3,16 +3,13 @@
 package nativev1
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
-	"io"
 	"os"
 
 	"golang.org/x/sys/unix"
 )
 
-// The Linux loader's plain system calls - statx, readlink and hashing - which need no cgo, so the
-// loader's path and content checks can run against the real filesystem in any Linux build. The
+// The Linux loader's plain system calls - statx and readlink - which need no cgo, so the
+// loader's path checks can run against the real filesystem in any Linux build. The
 // dynamic-linker calls (dlopen, dladdr, dlinfo) are in kms_linux.go and need cgo.
 
 // linuxTrustedFile resolves path to a regular file, failing unless it passes the path checks.
@@ -50,18 +47,4 @@ func linuxProbe(path string) int {
 func linuxReadLink(path string) (string, bool) {
 	target, err := os.Readlink(path)
 	return target, err == nil
-}
-
-func sha256File(path string) (string, error) {
-	file, err := os.Open(path)
-	if err != nil {
-		return "", err
-	}
-	defer file.Close()
-
-	hash := sha256.New()
-	if _, err := io.Copy(hash, file); err != nil {
-		return "", err
-	}
-	return hex.EncodeToString(hash.Sum(nil)), nil
 }

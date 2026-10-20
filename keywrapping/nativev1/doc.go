@@ -15,9 +15,10 @@
 //	Linux:   /usr/lib/<multiarch>/libhkdfguard.so.1, or /usr/lib64/libhkdfguard.so.1
 //
 // Verification checks the ownership and permissions of every path component, the platform code
-// signature (Authenticode on Windows, Developer ID on macOS) or a pinned SHA-256 (Linux), the
-// dynamic linker's environment, and - after loading - which file the dynamic linker actually
-// mapped. Any failed check returns an error wrapping ErrUntrusted; there is deliberately no
+// signature (Authenticode on Windows, Developer ID on macOS), the dynamic linker's environment,
+// and - after loading - which file the dynamic linker actually mapped. The Linux library is not
+// content-pinned: a release's authenticity is verified with Sigstore/cosign when the package is
+// installed, so path integrity is what the loader enforces there. Any failed check returns an error wrapping ErrUntrusted; there is deliberately no
 // fallback and no override.
 //
 // On macOS and Linux the library is loaded through cgo (dlopen), so those builds need

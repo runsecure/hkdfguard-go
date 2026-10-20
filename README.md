@@ -116,8 +116,9 @@ use the cipher-neutral errors in `hkdfguard` (`ErrAuthenticationFailed`, `ErrKey
 Go port of `HkdfGuard.KeyWrapping.V1`: a `hkdfguard.KeyWrapper` over the OS's native HkdfGuard KMS
 library (TPM2 on Linux, Secure Enclave on macOS, Platform Crypto Provider on Windows). The library
 is loaded only from its fixed install location, after verifying path ownership and permissions,
-the code signature (Authenticode / Developer ID) or pinned SHA-256 (Linux), and the dynamic
-linker's environment.
+the code signature (Authenticode / Developer ID), and the dynamic linker's environment. The Linux
+library is not content-pinned; verify a release with Sigstore/cosign (`gh attestation verify`)
+before installing it.
 
 ```go
 wrapper, err := nativev1.New("com.example.orders") // service must be provisioned first

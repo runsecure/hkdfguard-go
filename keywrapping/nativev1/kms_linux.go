@@ -46,9 +46,6 @@ func loadPlatformLibrary() (kmsLibrary, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := linuxVerifyContent(path, sha256File, linuxKnownReleases); err != nil {
-		return nil, err
-	}
 
 	initial, err := os.ReadFile("/proc/self/environ")
 	if err != nil {
