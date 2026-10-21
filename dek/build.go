@@ -4,7 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"iter"
 	"log/slog"
+	"maps"
+	"math"
 	"slices"
 	"time"
 
@@ -52,7 +55,8 @@ var (
 //
 // Key files are rotated by deployment: each release brings freshly generated files. Ephemeral keys
 // are rotated by the ring itself: one with any ephemeral key adds a fresh one as its current
-// version every EphemeralKeyRotation.
+// version every EphemeralKeyRotation. That rotation must never supersede a key file, so while it is
+// enabled every key file must be at a version below the highest ephemeral one.
 type Config struct {
 	// KeyWrapper reveals every key's DEK. Required.
 	KeyWrapper hkdfguard.KeyWrapper
@@ -93,7 +97,9 @@ type Config struct {
 
 	// EphemeralKeyRotation is how often a ring with ephemeral keys rotates them: at least
 	// MinEphemeralKeyRotation, or DefaultEphemeralKeyRotation when zero. A ring of key files alone
-	// never rotates.
+	// never rotates. Each rotation adds its key above the current version, so Build refuses a
+	// rotating ring with a key file above every ephemeral version: the first rotation would replace
+	// it as current, and new values would be encrypted under a key that does not survive a restart.
 	EphemeralKeyRotation time.Duration
 
 	// DisableEphemeralKeyRotation keeps the ephemeral key built at startup current until the
@@ -128,6 +134,9 @@ func (c *Config) validate() error {
 	case c.EphemeralKeyRetention != 0 && c.EphemeralKeyRetention < MinEphemeralKeyRetention:
 		return fmt.Errorf("%w: EphemeralKeyRetention must be at least %v, got %v", ErrInvalidConfig, MinEphemeralKeyRetention, c.EphemeralKeyRetention)
 	}
+	if version, superseded := keyFileSupersededByRotation(maps.Keys(c.KeyFiles), c.EphemeralKeys, c.DisableEphemeralKeyRotation); superseded {
+		return fmt.Errorf("%w: key file version %d is above every ephemeral version, so the first scheduled rotation would replace it as the current version and new values would be encrypted under a key that does not survive a restart; configure the ephemeral key at a version above every key file, or disable ephemeral key rotation", ErrInvalidConfig, version)
+	}
 	if c.ServiceName != "" {
 		if err := hkdfguard.ValidateServiceName(c.ServiceName); err != nil {
 			return err
@@ -136,9 +145,25 @@ func (c *Config) validate() error {
 	return c.RefreshFailurePolicy.Validate()
 }
 
-// Build reads each key file, creates each ephemeral key, and returns the populated KeyRing. If
-// anything fails partway - an unreadable file, an unwrap failure, a version registered twice,
-// ctx cancelled - every key created so far is closed and the error returned.
+// keyFileSupersededByRotation returns the highest key file version, and true when ephemeral key
+// rotation would supersede it: rotation adds each key above the current version, so a key file above
+// every ephemeral version would be replaced as current by an in-memory key at the first rotation.
+func keyFileSupersededByRotation(keyFileVersions iter.Seq[int], ephemeralVersions []int, rotationDisabled bool) (int, bool) {
+	if len(ephemeralVersions) == 0 || rotationDisabled {
+		return 0, false
+	}
+	highestKeyFile := math.MinInt
+	for version := range keyFileVersions {
+		highestKeyFile = max(highestKeyFile, version)
+	}
+	return highestKeyFile, highestKeyFile > slices.Max(ephemeralVersions)
+}
+
+// Build reads each key file, creates each ephemeral key, and returns the populated KeyRing. It
+// validates config first, reading no file and creating no key when it is invalid - including a key
+// file above every ephemeral version while ephemeral key rotation is enabled. If anything fails
+// partway - an unreadable file, an unwrap failure, a version registered twice, ctx cancelled -
+// every key created so far is closed and the error returned.
 func Build(ctx context.Context, config Config) (*KeyRing, error) {
 	if err := config.validate(); err != nil {
 		return nil, err

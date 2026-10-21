@@ -102,6 +102,31 @@ func TestBuild_RegistersKeyFilesAndEphemeralKeys_TheHighestBeingCurrent(t *testi
 	}
 }
 
+func TestBuild_AKeyFileAboveEveryEphemeralVersion_IsRefusedWhileRotating_BeforeReadingAnyFile(t *testing.T) {
+	f := &recordingFactory{t: t}
+	config := baseConfig(f)
+	wrapper := &keyFileReadingWrapper{contents: map[string][]byte{"/keys/one": []byte("wrapped one"), "/keys/three": []byte("wrapped three")}}
+	config.KeyWrapper = wrapper
+	config.KeyFiles = map[int]string{1: "/keys/one", 3: "/keys/three"}
+	config.EphemeralKeys = []int{2}
+
+	if _, err := Build(bg, config); !errors.Is(err, ErrInvalidConfig) {
+		t.Errorf("error = %v; want ErrInvalidConfig", err)
+	}
+	if len(wrapper.paths) != 0 || len(f.providers()) != 0 {
+		t.Errorf("a refused config read %v and created %d providers", wrapper.paths, len(f.providers()))
+	}
+
+	// The key file stays current when nothing rotates past it.
+	config.DisableEphemeralKeyRotation = true
+	ring := mustBuild(t, config)
+
+	requireCurrent(t, ring, 3)
+	if _, rotates := ring.EphemeralKeyRotationInterval(); rotates {
+		t.Error("the ring rotates")
+	}
+}
+
 func TestBuild_UsesTheConfiguredFormatProvider(t *testing.T) {
 	f := &recordingFactory{t: t}
 	config := baseConfig(f)
@@ -123,7 +148,7 @@ func TestBuild_FailingPartway_ClosesEveryKeyItCreated(t *testing.T) {
 			c.EphemeralKeys = []int{2, 1}
 		},
 		"an unreadable key file": func(c *Config) {
-			c.EphemeralKeys = []int{2}
+			c.EphemeralKeys = []int{4}
 			c.KeyFiles = map[int]string{1: writeKeyFile(t, []byte("wrapped")), 3: filepath.Join(t.TempDir(), "missing")}
 		},
 	}
