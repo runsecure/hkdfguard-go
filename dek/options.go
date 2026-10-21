@@ -116,6 +116,16 @@ func (o Options) Validate() error {
 	for _, version := range order {
 		fail("Version %d is registered more than once across KeyFiles/EphemeralKeys.", version)
 	}
+	keyFileVersions := func(yield func(int) bool) {
+		for _, keyFile := range o.KeyFiles {
+			if !yield(keyFile.Version) {
+				return
+			}
+		}
+	}
+	if version, superseded := keyFileSupersededByRotation(keyFileVersions, o.EphemeralKeys, o.DisableEphemeralKeyRotation); superseded {
+		fail("KeyFiles version %d is above every ephemeral version, so the first scheduled rotation would replace it as the current version and new values would be encrypted under a key that does not survive a restart. Configure the ephemeral key at a version above every key file, or set DisableEphemeralKeyRotation.", version)
+	}
 
 	if len(failures) == 0 {
 		return nil

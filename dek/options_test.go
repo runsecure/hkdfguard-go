@@ -32,7 +32,8 @@ func requireInvalid(t *testing.T, o Options, reasons ...string) {
 
 func TestOptions_Valid_Passes(t *testing.T) {
 	o := validOptions()
-	o.KeyFiles = []KeyFileOptions{{Version: 2, Path: "/etc/app/key.v2"}}
+	o.KeyFiles = []KeyFileOptions{{Version: 1, Path: "/etc/app/key.v1"}}
+	o.EphemeralKeys = []int{2}
 	o.MaxRefreshFailures = intPtr(10)
 	o.EphemeralKeyRotationHours = intPtr(MaxEphemeralKeyRotationHours)
 	o.EphemeralKeyRetentionHours = intPtr(24 * 365)
@@ -121,6 +122,17 @@ func TestOptions_KeysAreChecked(t *testing.T) {
 	o = validOptions()
 	o.KeyFiles = []KeyFileOptions{{Version: 1, Path: "/a"}, {Version: 2, Path: "/b"}, {Version: 2, Path: "/c"}}
 	requireInvalid(t, o, "Version 1 is registered more than once", "Version 2 is registered more than once")
+}
+
+func TestOptions_AKeyFileAboveEveryEphemeralVersion_IsRefusedWhileRotating(t *testing.T) {
+	o := validOptions()
+	o.KeyFiles = []KeyFileOptions{{Version: 3, Path: "/etc/app/key.v3"}, {Version: 2, Path: "/etc/app/key.v2"}}
+	requireInvalid(t, o, "KeyFiles version 3 is above every ephemeral version")
+
+	o.DisableEphemeralKeyRotation = true
+	if err := o.Validate(); err != nil {
+		t.Errorf("with rotation disabled: %v", err)
+	}
 }
 
 func TestOptions_ReportEveryFailureAtOnce(t *testing.T) {
