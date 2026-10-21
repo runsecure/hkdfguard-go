@@ -44,7 +44,8 @@ var (
 // Config.EphemeralKeyRotation): every interval it creates a fresh ephemeral key and adds it at
 // CurrentVersion + 1, so every later Encrypt uses it. A superseded ephemeral key stays registered
 // for the retention, so values encrypted under it still decrypt for that long; then a later
-// rotation closes and removes it. Keys read from key files are never retired.
+// rotation closes and removes it. Keys read from key files are never retired, and Build refuses a
+// rotating ring with a key file above every ephemeral version, which rotation would supersede.
 type KeyRing struct {
 	formatProvider hkdfguard.EncryptedFormatProvider
 
