@@ -220,8 +220,9 @@ usual sense, but its permissions still matter. Anyone who can replace it control
 application encrypts new data with. So the Go library reads every key file through the native
 library (`hkdfguard_open_file`), which refuses:
 
-- a file, or a folder above it, that an account other than SYSTEM, Administrators,
-  TrustedInstaller (Windows) or the account reading it could write or replace, and a path through a
+- a file, or a folder above it, that an untrusted account could write or replace. Trusted are
+  root or SYSTEM, Administrators and TrustedInstaller, and the deployers (Windows and Linux) or the
+  reading account (macOS); under the developer security model, the reading account everywhere. and a path through a
   symbolic link, junction or other reparse point, an 8.3 short name (`PROGRA~1`), or a network,
   mapped or SUBST drive - a folder created directly under `C:\` inherits "Authenticated Users:
   Modify" and is refused until its permissions are narrowed;
@@ -297,23 +298,42 @@ func createKeyFile(toolPath, serviceName, keyFilePath, group string) error {
 }
 ```
 
+Before you call it on Windows, prepare the folder it writes to. The native library refuses a key
+file anywhere under `C:\ProgramData`, where every user may create entries, and in a folder created
+directly under `C:\` with its default permissions. From an elevated PowerShell, give the key files
+a folder of their own, with inherited permissions removed:
+
+```powershell
+New-Item -ItemType Directory -Force C:\HkdfGuardKeys\myapp | Out-Null
+icacls C:\HkdfGuardKeys /inheritance:r /grant:r "*S-1-5-18:(OI)(CI)F" "*S-1-5-32-544:(OI)(CI)F" "*S-1-5-32-545:(OI)(CI)RX" "HkdfGuardDeployers:(OI)(CI)M"
+icacls C:\HkdfGuardKeys /setowner "*S-1-5-32-544" /T
+```
+
+Then make the call from an elevated prompt, or as a member of `HkdfGuardDeployers`. Under the
+production security model, the Windows default, `wrap` refuses any other account, and the library
+doesn't trust a key file that the application's own account wrote. The native library's
+[administration guide](https://github.com/runsecure/hkdfguard-native-windows/blob/main/docs/admin-guide.md#where-to-keep-key-files)
+explains both rules.
+
 Call it once. On Windows:
 
 ```go
 err := createKeyFile(
 	filepath.Join(os.Getenv("ProgramFiles"), `HkdfGuard\v1\hkdfguard.exe`),
 	"com.example.myapp",
-	`C:\ProgramData\MyApp\keys\v1.key`,
+	`C:\HkdfGuardKeys\myapp\v1.key`,
 	"HkdfGuardUsers")
 ```
 
-On macOS:
+On macOS, as the account that provisioned the KEK, after creating the folder with
+`mkdir -p -m 0700 ~/Library/Application\ Support/MyApp/keys` (the native library trusts a key
+file in a folder owned by you or root that no one else can write):
 
 ```go
 err := createKeyFile(
 	"/Library/Application Support/HkdfGuard/v1/hkdfguard",
 	"com.example.myapp",
-	"/Library/Application Support/MyApp/keys/v1.key",
+	filepath.Join(os.Getenv("HOME"), "Library/Application Support/MyApp/keys/v1.key"),
 	"")
 ```
 
