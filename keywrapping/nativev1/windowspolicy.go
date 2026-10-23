@@ -158,6 +158,22 @@ func winVerifySignerIdentity(path, leafSubject string, leafEKUs []string, rootSH
 	return nil
 }
 
+// winCertRevoked is CERT_E_REVOKED: WinVerifyTrust's answer when a certificate in the signer's
+// chain has definitely been revoked.
+const winCertRevoked uint32 = 0x800B010C
+
+// winRevocationDecision is the rule for the revocation pass: refuse only a definite revocation.
+// Every other result - success, revocation servers offline (CRYPT_E_REVOCATION_OFFLINE), no
+// revocation check possible (CRYPT_E_NO_REVOCATION_CHECK), CERT_E_REVOCATION_FAILURE, or anything
+// else - lets the load continue: the first pass already validated the signature and its pins, and
+// a host that can't reach a revocation server must still start.
+func winRevocationDecision(path string, status uint32) error {
+	if status == winCertRevoked {
+		return untrusted("'%s' is signed with a certificate that has been revoked; refusing to load it. Install a current release.", path)
+	}
+	return nil
+}
+
 // PE header values.
 const (
 	peFileDLL      = 0x2000 // IMAGE_FILE_DLL

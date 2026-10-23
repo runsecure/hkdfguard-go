@@ -1,6 +1,8 @@
 package nativev1
 
 import (
+	"encoding/binary"
+	"fmt"
 	"slices"
 	"strconv"
 	"strings"
@@ -11,7 +13,9 @@ import (
 // library from one of its two install locations and nowhere else:
 //
 //  1. Location. The system install, macSystemDirectory, is used whenever it exists; the per-user
-//     install, ~/.hkdfguard/v1, only when there is no system install. Anything running as the user
+//     install, ~/.hkdfguard/v1, only when there is no system install. The home folder comes from
+//     the account database (getpwuid), never from $HOME, so whoever sets the process's
+//     environment can't choose where the library is loaded from. Anything running as the user
 //     can write to the user's home, so a per-user file must never override a root-owned system
 //     one. If the system install exists but fails a check, loading fails - it never falls back.
 //     Nor does it fall back when the system install merely can't be examined: only "nothing is
@@ -22,6 +26,8 @@ import (
 //     wheel or admin group when root owns them. Every component of a system install must be owned
 //     by root; of a user install, by root or the current user.
 //  3. Code signature. The file's signature must be valid and satisfy macCodeRequirement.
+//     Its version - LC_ID_DYLIB's current_version, which the signature covers - must be at
+//     least macMinimumLibraryVersion, so an older genuine release can't be planted in its place.
 //  4. What dyld loaded. dlopen of an absolute path first looks for its leaf name in every
 //     DYLD_LIBRARY_PATH directory, so the loader refuses before dlopen if one holds a
 //     macFileName, and after dlopen asks dyld (dladdr) which file it mapped; anything but the
@@ -48,6 +54,15 @@ const (
 
 	// macMinimumMajorVersion is the library's own minimum (its LC_BUILD_VERSION minos).
 	macMinimumMajorVersion = 13
+
+	// macMinimumLibraryVersion is the oldest native library release this package loads, in
+	// Mach-O's packed form (major<<16 | minor<<8 | patch): 0.9.0. A release that fixes a security
+	// problem in the library raises it, so an older, genuinely signed copy can't be put back in
+	// its place.
+	macMinimumLibraryVersion uint32 = 0<<16 | 9<<8 | 0
+
+	// macVersionReadLimit bounds how much of the file is read to find its version.
+	macVersionReadLimit = 64 * 1024
 
 	// probeExport is an export every genuine build has; its address tells dladdr which file was
 	// loaded. Shared with the Linux loader.
@@ -249,4 +264,126 @@ func macParentOf(path string) (string, bool) {
 		return "/", true
 	}
 	return path[:slash], true
+}
+
+// Mach-O constants the version check needs.
+const (
+	machoMagic64   uint32 = 0xfeedfacf // MH_MAGIC_64, little-endian on arm64
+	machoFatMagic  uint32 = 0xcafebabe // FAT_MAGIC, big-endian
+	machoFatMagic6 uint32 = 0xcafebabf // FAT_MAGIC_64, big-endian
+	machoCPUARM64  uint32 = 0x0100000c // CPU_TYPE_ARM64
+	machoLCIDDylib uint32 = 0xd        // LC_ID_DYLIB
+)
+
+// macFormatVersion renders a packed Mach-O version as major.minor.patch.
+func macFormatVersion(v uint32) string {
+	return fmt.Sprintf("%d.%d.%d", v>>16, (v>>8)&0xff, v&0xff)
+}
+
+// macDylibCurrentVersion reads LC_ID_DYLIB's current_version from the start of a Mach-O file:
+// a thin arm64 image, or the arm64 slice of a fat one. data is at most the first
+// macVersionReadLimit bytes; anything malformed, truncated, or not arm64 is an error.
+func macDylibCurrentVersion(data []byte) (uint32, error) {
+	if len(data) < 4 {
+		return 0, fmt.Errorf("too short to be a Mach-O file")
+	}
+	switch magic := binary.BigEndian.Uint32(data); magic {
+	case machoFatMagic, machoFatMagic6:
+		return macFatArm64Version(data, magic == machoFatMagic6)
+	}
+	return macThinArm64Version(data)
+}
+
+func macFatArm64Version(data []byte, wide bool) (uint32, error) {
+	if len(data) < 8 {
+		return 0, fmt.Errorf("truncated fat header")
+	}
+	count := binary.BigEndian.Uint32(data[4:])
+	entrySize := uint64(20) // fat_arch: cputype, cpusubtype, offset, size, align
+	if wide {
+		entrySize = 32 // fat_arch_64: cputype, cpusubtype, offset(8), size(8), align, reserved
+	}
+	if uint64(count)*entrySize+8 > uint64(len(data)) {
+		return 0, fmt.Errorf("fat header lists %d architectures, more than were read", count)
+	}
+	for i := uint64(0); i < uint64(count); i++ {
+		entry := data[8+i*entrySize:]
+		if binary.BigEndian.Uint32(entry) != machoCPUARM64 {
+			continue
+		}
+		var offset uint64
+		if wide {
+			offset = binary.BigEndian.Uint64(entry[8:])
+		} else {
+			offset = uint64(binary.BigEndian.Uint32(entry[8:]))
+		}
+		if offset >= uint64(len(data)) {
+			return 0, fmt.Errorf("the arm64 slice starts at %d, beyond the %d bytes read", offset, len(data))
+		}
+		return macThinArm64Version(data[offset:])
+	}
+	return 0, fmt.Errorf("no arm64 slice")
+}
+
+func macThinArm64Version(data []byte) (uint32, error) {
+	const headerSize = 32 // mach_header_64
+	if len(data) < headerSize {
+		return 0, fmt.Errorf("truncated Mach-O header")
+	}
+	le := binary.LittleEndian
+	if le.Uint32(data) != machoMagic64 {
+		return 0, fmt.Errorf("not a 64-bit Mach-O file")
+	}
+	if le.Uint32(data[4:]) != machoCPUARM64 {
+		return 0, fmt.Errorf("not an arm64 image")
+	}
+	ncmds := le.Uint32(data[16:])
+	sizeofcmds := uint64(le.Uint32(data[20:]))
+	end := headerSize + sizeofcmds
+	if end > uint64(len(data)) {
+		return 0, fmt.Errorf("load commands run past the bytes read")
+	}
+	at := uint64(headerSize)
+	for i := uint32(0); i < ncmds; i++ {
+		if at+8 > end {
+			return 0, fmt.Errorf("load command %d runs past the load commands", i)
+		}
+		cmd := le.Uint32(data[at:])
+		size := uint64(le.Uint32(data[at+4:]))
+		if size < 8 || size%8 != 0 || at+size > end {
+			return 0, fmt.Errorf("load command %d has an invalid size %d", i, size)
+		}
+		if cmd == machoLCIDDylib {
+			if size < 24 { // cmd, cmdsize, name offset, timestamp, current_version, compatibility_version
+				return 0, fmt.Errorf("LC_ID_DYLIB is too short")
+			}
+			return le.Uint32(data[at+16:]), nil
+		}
+		at += size
+	}
+	return 0, fmt.Errorf("no LC_ID_DYLIB load command")
+}
+
+// macRequireMinimumVersion refuses a library whose version, read from data (the start of the
+// verified file at path), is missing, unreadable or below macMinimumLibraryVersion.
+func macRequireMinimumVersion(path string, data []byte) error {
+	version, err := macDylibCurrentVersion(data)
+	if err != nil {
+		return untrusted("Could not read the version of the HkdfGuard native library '%s' (%v); refusing to load it.", path, err)
+	}
+	if version < macMinimumLibraryVersion {
+		return untrusted("'%s' is HkdfGuard native library version %s, older than the minimum this package accepts (%s); install a current release.",
+			path, macFormatVersion(version), macFormatVersion(macMinimumLibraryVersion))
+	}
+	return nil
+}
+
+// macHomeFromAccount is the per-user install's base: the home folder the account database gives
+// this process's effective user, or "" - no per-user install - if the lookup failed or gave
+// anything but an absolute path.
+func macHomeFromAccount(home string, ok bool) string {
+	if !ok || !strings.HasPrefix(home, "/") {
+		return ""
+	}
+	return home
 }

@@ -200,3 +200,20 @@ func TestWinADLLForAnotherArchitecture_IsRefused(t *testing.T) {
 		requireUntrusted(t, winVerifyImageKind("test", peFileDLL, c.machine, c.goarch))
 	}
 }
+
+func TestWinRevocationDecision_RefusesOnlyADefiniteRevocation(t *testing.T) {
+	const path = `C:\Program Files\HkdfGuard\v1\HkdfGuard.dll`
+	requireUntrusted(t, winRevocationDecision(path, 0x800B010C), path, "revoked") // CERT_E_REVOKED
+
+	for _, status := range []uint32{
+		0,          // success: not revoked
+		0x80092013, // CRYPT_E_REVOCATION_OFFLINE: the server couldn't be reached
+		0x80092012, // CRYPT_E_NO_REVOCATION_CHECK: no revocation data
+		0x800B010E, // CERT_E_REVOCATION_FAILURE: revocation status unknown
+		0x80096010, // anything else (TRUST_E_BAD_DIGEST): the first pass already decided validity
+	} {
+		if err := winRevocationDecision(path, status); err != nil {
+			t.Errorf("status %#x: %v; only a definite revocation refuses the load", status, err)
+		}
+	}
+}

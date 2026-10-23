@@ -138,9 +138,21 @@ deploying a new key file at a higher version regularly.
 Go port of `HkdfGuard.KeyWrapping.V1`: a `hkdfguard.KeyWrapper` over the OS's native HkdfGuard KMS
 library (TPM2 on Linux, Secure Enclave on macOS, Platform Crypto Provider on Windows). The library
 is loaded only from its fixed install location, after verifying path ownership and permissions,
-the code signature (Authenticode / Developer ID), and the dynamic linker's environment. The Linux
+the code signature (Authenticode / Developer ID), and the dynamic linker's environment. On macOS
+the per-user location is found from the account database, never `$HOME`, and the library must be
+at least version 0.9.0 (its `LC_ID_DYLIB` current version, covered by the signature), so an older
+signed release can't be planted in its place. The Linux
 library is not content-pinned; verify a release with Sigstore/cosign (`gh attestation verify`)
 before installing it.
+
+Certificate revocation: on Windows, once the signature and its pins have passed, the loader asks
+WinVerifyTrust once more, now checking revocation across the signing chain and allowed to fetch
+revocation data over the network. It refuses the library only when a certificate is definitely
+revoked; if revocation can't be determined (offline, no data), it loads. A host whose network
+silently drops traffic, rather than refusing it, may stall once, on the first load, until that
+lookup times out. On macOS revocation isn't checked: the defences are the Developer ID and Team ID
+pins, the admin-only system install, and the minimum library version. A compromised signing
+identity is answered by a new release and a raised minimum version.
 
 ```go
 wrapper, err := nativev1.New("com.example.orders") // service must be provisioned first
