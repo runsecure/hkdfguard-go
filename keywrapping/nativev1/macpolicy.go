@@ -130,9 +130,29 @@ func macIsPresent(path string, probe func(string) int, kind string) (bool, error
 	}
 }
 
-// macRefuseShadowing refuses, before anything is loaded, if a DYLD_LIBRARY_PATH directory
-// contains a file named macFileName: dyld would load that in place of the verified path.
+// macRefusedDyldVariables are the dyld variables whose presence alone refuses the load: each makes
+// dyld inject code into this process, or load another file in place of a library it names -
+// including the frameworks the HkdfGuard native library calls with every DEK. None is set on a
+// production host.
+var macRefusedDyldVariables = []string{
+	"DYLD_INSERT_LIBRARIES", "DYLD_FRAMEWORK_PATH", "DYLD_VERSIONED_LIBRARY_PATH", "DYLD_VERSIONED_FRAMEWORK_PATH", "DYLD_IMAGE_SUFFIX",
+}
+
+// macRefuseShadowing refuses, before anything is loaded, if one of macRefusedDyldVariables is set,
+// or a DYLD_LIBRARY_PATH directory contains a file named macFileName: dyld would load that in place
+// of the verified path.
+//
+// A guard against a misconfigured environment, not against whoever controls it: dyld acts on these
+// variables when the process starts, so code they injected has already run - and can hide - by the
+// time this looks. Running the host with the Hardened Runtime, which makes dyld ignore them, is what
+// keeps that code out.
 func macRefuseShadowing(getenv func(string) string, exists func(string) bool) error {
+	for _, name := range macRefusedDyldVariables {
+		if getenv(name) != "" {
+			return untrusted("%s is set, so dyld may inject code into this process or substitute a library the HkdfGuard native library uses; refusing to load it. Unset %s.", name, name)
+		}
+	}
+
 	searchPath := getenv("DYLD_LIBRARY_PATH")
 	for _, directory := range strings.Split(searchPath, ":") {
 		if directory == "" {

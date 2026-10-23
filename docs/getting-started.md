@@ -376,7 +376,7 @@ the same on Windows, Linux and macOS.
 | You see | Cause | Fix |
 |---|---|---|
 | `nativev1.ErrNotInstalled` | The native package isn't installed at its fixed location | Step 1 |
-| `nativev1.ErrUntrusted` | The installed library, or a folder above it, failed verification: wrong signature, writable by non-administrators, or (macOS) a `DYLD_LIBRARY_PATH` entry shadows it | Reinstall the native package; don't change that folder's permissions; clear the linker variables |
+| `nativev1.ErrUntrusted` | The installed library, or a folder above it, failed verification: wrong signature, writable by non-administrators, or (macOS) a `DYLD_LIBRARY_PATH` entry shadows it, or `DYLD_INSERT_LIBRARIES` or another dyld variable that injects or substitutes code is set | Reinstall the native package; don't change that folder's permissions; clear the linker variables |
 | `nativev1.ErrUnsupportedPlatform` | Built with `CGO_ENABLED=0` on macOS or Linux, or an Intel Mac / an amd64 binary under Rosetta | Build with `CGO_ENABLED=1` for `darwin/arm64` |
 | `StatusError` `-17` | No KEK is provisioned for this service name | Step 2, with the same service name |
 | `StatusError` `-18` (Windows) | The KEK exists, but this account may not use it | Add the account to `HkdfGuardUsers`, then sign out and in |
