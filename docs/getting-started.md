@@ -27,7 +27,9 @@ HkdfGuard never holds your master key. There are two keys:
   leaves it. Each KEK is identified by a **service name**, such as `com.example.myapp`.
 - A **DEK** (data encryption key) is what actually encrypts your data, with AES-256-GCM. On disk
   it exists only *wrapped*, encrypted under the KEK. Your process asks the native library to unwrap
-  it at startup and holds it in memory that is zeroed when you're done.
+  it at startup and holds it in a buffer that is zeroed when you're done. Go's AES implementation
+  keeps its own expanded copy of the key, which can't be zeroed (see the `aesgcm256` package
+  documentation).
 
 Two separate things are installed:
 
@@ -196,7 +198,8 @@ The launch code is 0000
 What happened:
 
 - `dek.Build` asked the native library to generate a fresh DEK and wrap it under your KEK. It then
-  unwrapped it into memory the library zeroes when the ring is closed. The plaintext DEK was never
+  unwrapped it into a buffer the library zeroes when the ring is closed, apart from the expanded
+  copy Go's AES implementation keeps. The plaintext DEK was never
   on disk.
 - `enc::v1::...` is the stored form: `v1` is the key version, and the rest is the AES-GCM
   ciphertext in base64. It is the same format the .NET libraries write and read.
