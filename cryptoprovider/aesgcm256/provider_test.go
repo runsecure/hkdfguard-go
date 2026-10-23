@@ -48,6 +48,7 @@ func TestNew_BadArgumentsOrACancelledContext_NeverReachTheKeyWrapper(t *testing.
 		{"negative expiry", context.Background(), -time.Second, hkdfguard.RefreshFailurePolicy{}, ErrInvalidExpiry},
 		{"expiry over 300s", context.Background(), 301 * time.Second, hkdfguard.RefreshFailurePolicy{}, ErrInvalidExpiry},
 		{"fail closed after 0", context.Background(), time.Minute, hkdfguard.FailClosedAfter(0), hkdfguard.ErrInvalidRefreshFailurePolicy},
+		{"fail closed after 101", context.Background(), time.Minute, hkdfguard.FailClosedAfter(101), hkdfguard.ErrInvalidRefreshFailurePolicy},
 		{"cancelled", cancelled, time.Minute, hkdfguard.RefreshFailurePolicy{}, context.Canceled},
 	}
 	for _, c := range cases {

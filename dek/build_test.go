@@ -63,9 +63,11 @@ func TestBuild_RefusesAnIncompleteOrOutOfRangeConfig(t *testing.T) {
 		t.Errorf("bad service name: %v", err)
 	}
 	badPolicy := valid
-	badPolicy.RefreshFailurePolicy = hkdfguard.FailClosedAfter(0)
-	if _, err := Build(bg, badPolicy); !errors.Is(err, hkdfguard.ErrInvalidRefreshFailurePolicy) {
-		t.Errorf("bad policy: %v", err)
+	for _, limit := range []int{0, hkdfguard.MaxAllowedRefreshFailures + 1} {
+		badPolicy.RefreshFailurePolicy = hkdfguard.FailClosedAfter(limit)
+		if _, err := Build(bg, badPolicy); !errors.Is(err, hkdfguard.ErrInvalidRefreshFailurePolicy) {
+			t.Errorf("bad policy %d: %v", limit, err)
+		}
 	}
 	if len(f.providers()) != 0 {
 		t.Error("an invalid config created providers")
