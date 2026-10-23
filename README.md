@@ -15,7 +15,7 @@ and the [`hkdfguard` tool reference](docs/reference/cli.md).
 ### `hkdfguard` (module root)
 
 Go port of `HkdfGuard.Abstractions`: the interfaces every implementation satisfies
-(`KeyWrapper` and its optional `KeyFileReader`, `CryptoProviderFactory`/`CryptoProvider`, `DataEncryptionKey`, `KeyRing`,
+(`KeyWrapper`, `CryptoProviderFactory`/`CryptoProvider`, `DataEncryptionKey`, `KeyRing`,
 `EncryptedFormatProvider`, `DataProtector`, `PipelineDataProtector`, `ProtectedCache`), the shared
 cross-port rules (`ConfigurationPurpose`/`ConfigurationAAD`, `ValidateServiceName`), limits and
 defaults, and the `Wipe`/`IsZero` secret-memory helpers. Implementation packages import this one
@@ -61,11 +61,12 @@ ring, err := dek.Build(ctx, dek.Config{
 protector, err := ring.CreateProtector("orders")
 ```
 
-`Build` reads each key file through its `KeyWrapper` when the wrapper implements
-`hkdfguard.KeyFileReader` - the native key wrapper does, so the native library checks the file
-(see below) - and with `hkdfguard.ReadWrappedKeyFile` otherwise. Either way a file that isn't a
-wrapped key fails with an error wrapping `hkdfguard.ErrInvalidKeyFile` (`dek.ErrInvalidKeyFile` is
-the same sentinel).
+`Build` reads every key file through its `KeyWrapper` (`KeyWrapper.ReadKeyFile`), never with
+ordinary file I/O: whoever can replace a key file chooses the key new data is encrypted under, so
+reading one is part of the key wrapper's contract, and a wrapper must refuse a file another account
+could have written or replaced. The native key wrapper reads through the native library's checks
+(see below). A file that isn't a wrapped key fails with an error wrapping
+`hkdfguard.ErrInvalidKeyFile` (`dek.ErrInvalidKeyFile` is the same sentinel).
 
 Settings can also come from a file. `dek.Options` has the field names and units of the .NET
 port's `HkdfGuardOptions`, so one `appsettings.json` section configures both ports:

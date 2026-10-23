@@ -31,4 +31,16 @@ type KeyWrapper interface {
 	// instance wraps/reveals against, writing the wrapped key into result and returning the number
 	// of bytes written - the plaintext key never leaves this call.
 	GenerateAndWrap(ctx context.Context, result []byte) (int, error)
+
+	// ReadKeyFile reads a key file holding a key this wrapper wrapped, returning its bytes still
+	// wrapped - ready for Unwrap. Every key file a key ring uses is read here, never with
+	// ordinary file I/O, because whoever can replace a key file chooses the key new data is
+	// encrypted under. An implementation must refuse a file another account could have written
+	// or replaced; the native key wrapper does so through the native library's
+	// hkdfguard_open_file, which also refuses one holding what looks like an unwrapped key.
+	//
+	// A missing file's error satisfies errors.Is(err, fs.ErrNotExist); one this account may not
+	// read, or whose location the wrapper doesn't trust, errors.Is(err, fs.ErrPermission); one
+	// that is not a wrapped key, errors.Is(err, ErrInvalidKeyFile).
+	ReadKeyFile(ctx context.Context, path string) ([]byte, error)
 }

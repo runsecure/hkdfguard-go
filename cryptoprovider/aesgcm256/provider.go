@@ -52,8 +52,13 @@ type Provider struct {
 	cancel context.CancelFunc
 	done   chan struct{}
 
-	// Only the refresh goroutine touches this.
+	// Only the refresh goroutine touches these.
 	consecutiveFailures int
+	// Closed when a reveal that refreshOnce stopped waiting for finally returns; nil when there
+	// is none. While it is open no new reveal starts - see refreshOnce.
+	abandoned <-chan struct{}
+
+	refreshTimeout time.Duration // how long a refresh waits for the key wrapper: the refresh interval
 
 	afterRefresh func() // test hook: called after every refresh attempt
 }
@@ -64,10 +69,11 @@ var _ hkdfguard.CryptoProvider = (*Provider)(nil)
 type Option func(*options)
 
 type options struct {
-	logger       *slog.Logger
-	budget       *encryptionBudget
-	ticks        <-chan time.Time
-	afterRefresh func()
+	logger         *slog.Logger
+	budget         *encryptionBudget
+	ticks          <-chan time.Time
+	afterRefresh   func()
+	refreshTimeout time.Duration
 }
 
 // WithLogger sets where a provider logs each failed background refresh, key-access suspension and
@@ -80,9 +86,10 @@ func WithLogger(logger *slog.Logger) Option {
 
 // Test hooks: a budget of the test's own, refresh ticks the test sends, and a callback after each
 // refresh attempt so the test can wait for it.
-func withBudget(b *encryptionBudget) Option   { return func(o *options) { o.budget = b } }
-func withTicks(ticks <-chan time.Time) Option { return func(o *options) { o.ticks = ticks } }
-func withAfterRefresh(callback func()) Option { return func(o *options) { o.afterRefresh = callback } }
+func withBudget(b *encryptionBudget) Option     { return func(o *options) { o.budget = b } }
+func withTicks(ticks <-chan time.Time) Option   { return func(o *options) { o.ticks = ticks } }
+func withAfterRefresh(callback func()) Option   { return func(o *options) { o.afterRefresh = callback } }
+func withRefreshTimeout(d time.Duration) Option { return func(o *options) { o.refreshTimeout = d } }
 
 // New creates a Provider: it reveals the DEK in wrapped through wrapper (honoring ctx) and starts
 // the background refresh. The provider owns wrapped from here on and zeroes it when it's closed.
@@ -116,16 +123,22 @@ func New(ctx context.Context, wrapper hkdfguard.KeyWrapper, wrapped []byte, expi
 		ticks = ticker.C
 	}
 
+	refreshTimeout := expiry
+	if o.refreshTimeout > 0 {
+		refreshTimeout = o.refreshTimeout
+	}
+
 	loopCtx, cancel := context.WithCancel(context.Background())
 	p := &Provider{
-		wrapper:      wrapper,
-		wrapped:      wrapped,
-		policy:       policy,
-		logger:       o.logger,
-		budget:       first.budget,
-		cancel:       cancel,
-		done:         make(chan struct{}),
-		afterRefresh: o.afterRefresh,
+		refreshTimeout: refreshTimeout,
+		wrapper:        wrapper,
+		wrapped:        wrapped,
+		policy:         policy,
+		logger:         o.logger,
+		budget:         first.budget,
+		cancel:         cancel,
+		done:           make(chan struct{}),
+		afterRefresh:   o.afterRefresh,
 	}
 	p.current.Store(first)
 
@@ -253,47 +266,138 @@ func (p *Provider) refreshLoop(ctx context.Context, ticks <-chan time.Time, tick
 	}
 }
 
+// errRefreshTimedOut is the failure recorded for a refresh whose key wrapper did not return in
+// time, or had still not returned from an earlier one.
+var errRefreshTimedOut = errors.New("aesgcm256: the key wrapper did not reveal the key in time")
+
+type revealResult struct {
+	session *session
+	err     error
+}
+
+// refreshOnce re-reveals the key, waiting at most one refresh interval for the key wrapper. A
+// wrapper that hangs rather than failing (a busy TPM resource manager, a keychain prompt nobody
+// can answer, a KMS endpoint that never replies) must still count towards the refresh-failure
+// policy, or a revoked KEK would never suspend key access. A reveal that misses its deadline is
+// abandoned, not cancelled - a native call can't be - and until it returns no new one starts, so
+// a stuck wrapper never accumulates calls; each tick in the meantime is a failed refresh.
 func (p *Provider) refreshOnce(ctx context.Context) {
 	ctx, span := diagnostics.CryptoProviderAESGCM256.Start(ctx, diagnostics.SpanCryptoProviderAESGCM256BackgroundRefresh)
 	defer span.End()
 
-	fresh, err := reveal(ctx, p.wrapper, p.wrapped, p.budget, p.logger)
-	if err != nil {
+	if p.abandoned != nil {
+		select {
+		case <-p.abandoned:
+			p.abandoned = nil
+		default:
+			p.refreshFailed(ctx, span, fmt.Errorf("%w: it has still not returned from a refresh that timed out", errRefreshTimedOut))
+			return
+		}
+	}
+
+	// The reveal gets its own copy of the wrapped payload, since Close wipes p.wrapped without
+	// waiting for an abandoned reveal still reading it.
+	wrapped := append([]byte(nil), p.wrapped...)
+	results := make(chan revealResult) // unbuffered: a result is delivered only to a waiting refresh
+	giveUp := make(chan struct{})
+	finished := make(chan struct{})
+	go func() {
+		defer close(finished)
+		defer hkdfguard.Wipe(wrapped)
+		s, err := reveal(ctx, p.wrapper, wrapped, p.budget, p.logger)
+		select {
+		case results <- revealResult{s, err}:
+		case <-giveUp:
+			// Nobody is waiting: a late key is never put into use, so zero it now.
+			if s != nil {
+				s.close()
+			}
+		}
+	}()
+
+	timer := time.NewTimer(p.refreshTimeout)
+	defer timer.Stop()
+	var result revealResult
+	select {
+	case result = <-results:
+	case <-timer.C:
+		close(giveUp)
+		p.abandoned = finished
+		p.refreshFailed(ctx, span, fmt.Errorf("%w: no answer within %v", errRefreshTimedOut, p.refreshTimeout))
+		return
+	case <-ctx.Done():
+		// Shutdown: stop waiting, so Close never blocks on a stuck key wrapper.
+		close(giveUp)
+		return
+	}
+
+	if result.err != nil {
 		if ctx.Err() != nil {
 			// Shutdown: Close cancelled us; whatever the in-flight refresh failed with is moot.
 			return
 		}
-		p.refreshFailed(ctx, span, err)
+		p.refreshFailed(ctx, span, result.err)
 		return
 	}
 
-	if !p.swap(fresh) {
-		fresh.close() // closed while the refresh was in flight
+	if !p.swap(result.session) {
+		result.session.close() // closed while the refresh was in flight
 		return
 	}
 
 	previousFailures := p.consecutiveFailures
 	p.consecutiveFailures = 0
 	if limit, failsClosed := p.policy.MaxFailures(); failsClosed && previousFailures >= limit {
-		diagnostics.KeyAccessResumed(ctx, p.logger, previousFailures)
+		quietly(func() { diagnostics.KeyAccessResumed(ctx, p.logger, previousFailures) })
 	}
 }
 
 func (p *Provider) refreshFailed(ctx context.Context, span trace.Span, err error) {
-	diagnostics.RecordError(span, err)
-
 	p.consecutiveFailures++
 	failures := p.consecutiveFailures
+
+	// Enforce the policy before anything that runs application code (the log handler, the
+	// tracer), so a failure there can't leave the key in use past the limit. >= rather than ==,
+	// and a suspend that is a no-op once suspended, so no tick can step over it.
+	suspendedNow := false
+	if limit, failsClosed := p.policy.MaxFailures(); failsClosed && failures >= limit {
+		suspendedNow = p.suspend()
+	}
+
+	quietly(func() { diagnostics.RecordError(span, err) })
 	// Logged on every failure, whatever the policy: under fail-open it is the only sign the KEK
 	// is gone.
-	diagnostics.KeyRefreshFailed(ctx, p.logger, failures, p.policy.String(), err)
-
-	if limit, failsClosed := p.policy.MaxFailures(); failsClosed && failures == limit {
-		// Fail closed: zero the revealed DEK and refuse operations until a refresh succeeds.
-		p.swap(nil)
-		span.AddEvent(diagnostics.EventKeyAccessSuspended, trace.WithAttributes(diagnostics.AttrConsecutiveFailures.Int(failures)))
-		diagnostics.KeyAccessSuspended(ctx, p.logger, failures)
+	quietly(func() { diagnostics.KeyRefreshFailed(ctx, p.logger, failures, p.policy.String(), err) })
+	if suspendedNow {
+		quietly(func() {
+			span.AddEvent(diagnostics.EventKeyAccessSuspended, trace.WithAttributes(diagnostics.AttrConsecutiveFailures.Int(failures)))
+		})
+		quietly(func() { diagnostics.KeyAccessSuspended(ctx, p.logger, failures) })
 	}
+}
+
+// suspend fails closed: zeroes the revealed DEK and refuses operations until a refresh succeeds.
+// It reports whether this call suspended access - false if it already was, or the provider is
+// closed.
+func (p *Provider) suspend() bool {
+	p.swapMu.Lock()
+	defer p.swapMu.Unlock()
+	if p.closed.Load() {
+		return false
+	}
+	previous := p.current.Swap(nil)
+	if previous == nil {
+		return false
+	}
+	previous.close()
+	return true
+}
+
+// quietly runs code the application supplies (its log handler, its tracer) so that a panic in it
+// can never decide whether the key stays in use.
+func quietly(f func()) {
+	defer func() { _ = recover() }()
+	f()
 }
 
 // swap makes next the current session and closes the one it replaces, reporting false (and
@@ -310,8 +414,9 @@ func (p *Provider) swap(next *session) bool {
 	return true
 }
 
-// Close stops the background refresh - waiting for a refresh already in flight, whose context it
-// cancels - then zeroes the wrapped payload and the revealed key. Every later operation fails with
+// Close stops the background refresh - cancelling one in flight, and not waiting for a key wrapper
+// that doesn't return; whatever key it later reveals is zeroed when it arrives - then zeroes the
+// wrapped payload and the revealed key. Every later operation fails with
 // hkdfguard.ErrClosed. Safe to call more than once.
 func (p *Provider) Close() error {
 	p.swapMu.Lock()

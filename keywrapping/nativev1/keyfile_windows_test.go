@@ -140,18 +140,19 @@ func TestWindowsKeyFile_AKeyFileTheWrapperWrote_ReadsBackStillWrapped_AndUnwraps
 }
 
 func TestWindowsKeyFile_TheKeyRingsKeyFileRead_GoesThroughTheNativeLibrary(t *testing.T) {
-	// hkdfguard.ReadKeyFile is what dek.Build calls for each key file; the integration module
-	// builds real rings from key files (and refuses a plaintext one) end to end.
-	w := provisionedWrapper(t)
-	path, wrapped, _ := wrapToFile(t, w, keyFileDirectory(t))
+	// hkdfguard.KeyWrapper.ReadKeyFile is what dek.Build calls for each key file; the integration
+	// module builds real rings from key files (and refuses a plaintext one) end to end.
+	native := provisionedWrapper(t)
+	path, wrapped, _ := wrapToFile(t, native, keyFileDirectory(t))
+	var w hkdfguard.KeyWrapper = native
 
-	read, err := hkdfguard.ReadKeyFile(context.Background(), w, path)
+	read, err := w.ReadKeyFile(context.Background(), path)
 	if err != nil || !bytes.Equal(read, wrapped) {
 		t.Errorf("ReadKeyFile = %d bytes, %v; want the file's", len(read), err)
 	}
 
 	plaintext := writeKeyFileIn(t, filepath.Dir(path), "plaintext.bin", randomDEK(t))
-	_, err = hkdfguard.ReadKeyFile(context.Background(), w, plaintext)
+	_, err = w.ReadKeyFile(context.Background(), plaintext)
 	requireRefused(t, err, plaintext, errFilePlaintextKey, hkdfguard.ErrInvalidKeyFile)
 }
 

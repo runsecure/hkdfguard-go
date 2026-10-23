@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"errors"
 	"log/slog"
+	"os"
 	"sync"
 	"testing"
 	"time"
@@ -160,6 +161,12 @@ func (nopKeyWrapper) Unwrap(context.Context, []byte, []byte) (int, error) {
 }
 func (nopKeyWrapper) GenerateAndWrap(context.Context, []byte) (int, error) {
 	return 0, errors.New("unused")
+}
+
+// ReadKeyFile reads the file as it is: test key files are written by the test itself, and a real
+// key wrapper's trust checks are its own tests' concern.
+func (nopKeyWrapper) ReadKeyFile(_ context.Context, path string) ([]byte, error) {
+	return os.ReadFile(path)
 }
 
 // capturingHandler records slog records.

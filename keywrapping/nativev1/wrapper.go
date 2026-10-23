@@ -57,8 +57,7 @@ type KeyWrapper struct {
 }
 
 var (
-	_ hkdfguard.KeyWrapper    = (*KeyWrapper)(nil)
-	_ hkdfguard.KeyFileReader = (*KeyWrapper)(nil)
+	_ hkdfguard.KeyWrapper = (*KeyWrapper)(nil)
 )
 
 // New returns a KeyWrapper for the KEK identified by serviceName - 1 to 128 ASCII letters, digits
@@ -139,7 +138,7 @@ func (w *KeyWrapper) GenerateAndWrap(ctx context.Context, result []byte) (int, e
 // is touched, so any service's wrapper reads any key file. Besides the size and format checks, the
 // native library refuses a file another account could have written or replaced - its path, owner
 // and permissions are checked the way only the platform can - and one holding what looks like an
-// unwrapped key. dek.Build reads every key file this way (it implements hkdfguard.KeyFileReader).
+// unwrapped key. dek.Build reads every key file this way (hkdfguard.KeyWrapper.ReadKeyFile).
 //
 // A refusal is a *KeyFileError naming the path, status and its meaning; it satisfies
 // errors.Is(err, fs.ErrNotExist) for a missing file, errors.Is(err, fs.ErrPermission) for one this

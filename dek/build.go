@@ -41,9 +41,8 @@ var (
 	// of range.
 	ErrInvalidConfig = errors.New("dek: invalid key ring configuration")
 
-	// ErrInvalidKeyFile reports a key file that is not a regular file, is writable by its group
-	// or by others, or is empty or larger than hkdfguard.MaxWrappedKeyBytes - or that the
-	// KeyWrapper reading it refused as not a wrapped key. It is hkdfguard.ErrInvalidKeyFile.
+	// ErrInvalidKeyFile reports a key file the KeyWrapper reading it refused as not a wrapped key.
+	// It is hkdfguard.ErrInvalidKeyFile.
 	ErrInvalidKeyFile = hkdfguard.ErrInvalidKeyFile
 )
 
@@ -76,11 +75,11 @@ type Config struct {
 	// factory a logger - each failed refresh is then the only sign the KEK is gone.
 	RefreshFailurePolicy hkdfguard.RefreshFailurePolicy
 
-	// KeyFiles maps a version to the path of its wrapped DEK file. Each must be a regular file
-	// that only its owner can write (on Unix, no group or other write bit): a principal who could
-	// rewrite it, and reach the KEK, could substitute a DEK they know. Each file is read through
-	// KeyWrapper when it implements hkdfguard.KeyFileReader (the native key wrapper does, applying
-	// the native library's own checks), and with hkdfguard.ReadWrappedKeyFile otherwise.
+	// KeyFiles maps a version to the path of its wrapped DEK file. Each is read through
+	// KeyWrapper.ReadKeyFile, never with ordinary file I/O: a principal who could rewrite a key
+	// file, and reach the KEK, could substitute a DEK they know, so the wrapper refuses a file
+	// another account could have written or replaced (the native key wrapper through the native
+	// library's own checks).
 	KeyFiles map[int]string
 
 	// EphemeralKeys are versions whose DEK is generated at Build time and never written to disk.
@@ -211,11 +210,18 @@ func populate(ctx context.Context, ring *KeyRing, config *Config) error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		// Read through the key wrapper when it reads its own key files: a native KMS reads them
-		// with its own checks on who could have written them.
-		wrapped, err := hkdfguard.ReadKeyFile(ctx, config.KeyWrapper, config.KeyFiles[version])
+		// Read through the key wrapper, which checks who could have written the file.
+		wrapped, err := config.KeyWrapper.ReadKeyFile(ctx, config.KeyFiles[version])
 		if err != nil {
 			return err
+		}
+		// Whatever the key wrapper, a wrapped key is never empty and never over the limit.
+		switch {
+		case len(wrapped) == 0:
+			return fmt.Errorf("%w: key file '%s' is empty", hkdfguard.ErrInvalidKeyFile, config.KeyFiles[version])
+		case len(wrapped) > hkdfguard.MaxWrappedKeyBytes:
+			return fmt.Errorf("%w: key file '%s' is larger than %d bytes (hkdfguard.MaxWrappedKeyBytes); a wrapped key never is",
+				hkdfguard.ErrInvalidKeyFile, config.KeyFiles[version], hkdfguard.MaxWrappedKeyBytes)
 		}
 		provider, err := config.CryptoProviderFactory.Create(ctx, config.KeyWrapper, wrapped, config.KeyRefreshInterval, config.RefreshFailurePolicy)
 		if err != nil {
