@@ -37,6 +37,9 @@ func (w fixedKeyWrapper) Unwrap(_ context.Context, _, result []byte) (int, error
 func (w fixedKeyWrapper) GenerateAndWrap(_ context.Context, result []byte) (int, error) {
 	return copy(result, "wrapped"), nil
 }
+func (w fixedKeyWrapper) ReadKeyFile(context.Context, string) ([]byte, error) {
+	return nil, errors.New("unused: these tests read no key files")
+}
 
 // ringWithKey returns a ring holding key at version, through AES-256-GCM.
 func ringWithKey(t *testing.T, key []byte) *dek.KeyRing {

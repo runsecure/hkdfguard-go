@@ -41,6 +41,9 @@ func winLoad(path, expectedPublisher string) (kmsLibrary, error) {
 	if err := winVerifyImageKindOf(path); err != nil {
 		return nil, err
 	}
+	if err := winVerifyNotRevoked(path); err != nil {
+		return nil, err
+	}
 
 	// Absolute path, so no probing for the library itself; its own imports (kernel32, advapi32,
 	// ncrypt) come from System32 only, never the application directory or PATH.
@@ -201,6 +204,40 @@ type cryptProviderSigner struct {
 	counterSignerCount uint32
 	counterSigners     uintptr
 	chainContext       *windows.CertChainContext
+}
+
+// winVerifyNotRevoked is a second, separate WinVerifyTrust pass, run once every other check has
+// passed: the same generic Authenticode policy, now checking revocation across the whole chain
+// (except the root) and allowed to fetch revocation data over the network. Only a definite
+// revocation refuses the load (see winRevocationDecision); an offline host still starts. Lifetime
+// signing is deliberately not requested: Artifact Signing certificates live about three days, and
+// it would make every timestamped signature expire with them.
+func winVerifyNotRevoked(path string) error {
+	pathPtr, err := windows.UTF16PtrFromString(path)
+	if err != nil {
+		return untrustedCause(err, "Invalid path '%s'", path)
+	}
+
+	file := windows.WinTrustFileInfo{FilePath: pathPtr}
+	file.Size = uint32(unsafe.Sizeof(file))
+	data := windows.WinTrustData{
+		UIChoice:                        windows.WTD_UI_NONE,
+		RevocationChecks:                windows.WTD_REVOKE_WHOLECHAIN,
+		UnionChoice:                     windows.WTD_CHOICE_FILE,
+		FileOrCatalogOrBlobOrSgnrOrCert: unsafe.Pointer(&file),
+		StateAction:                     windows.WTD_STATEACTION_IGNORE,
+		ProvFlags:                       windows.WTD_REVOCATION_CHECK_CHAIN_EXCLUDE_ROOT,
+	}
+	data.Size = uint32(unsafe.Sizeof(data))
+
+	verifyErr := windows.WinVerifyTrustEx(windows.InvalidHWND, &windows.WINTRUST_ACTION_GENERIC_VERIFY_V2, &data)
+	runtime.KeepAlive(&file)
+	var status uint32
+	var errno syscall.Errno
+	if errors.As(verifyErr, &errno) {
+		status = uint32(errno)
+	}
+	return winRevocationDecision(path, status)
 }
 
 // signerAt converts the address WTHelperGetProvSignerFromChain returns - memory WinVerifyTrust

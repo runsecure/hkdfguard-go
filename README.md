@@ -15,7 +15,7 @@ and the [`hkdfguard` tool reference](docs/reference/cli.md).
 ### `hkdfguard` (module root)
 
 Go port of `HkdfGuard.Abstractions`: the interfaces every implementation satisfies
-(`KeyWrapper` and its optional `KeyFileReader`, `CryptoProviderFactory`/`CryptoProvider`, `DataEncryptionKey`, `KeyRing`,
+(`KeyWrapper`, `CryptoProviderFactory`/`CryptoProvider`, `DataEncryptionKey`, `KeyRing`,
 `EncryptedFormatProvider`, `DataProtector`, `PipelineDataProtector`, `ProtectedCache`), the shared
 cross-port rules (`ConfigurationPurpose`/`ConfigurationAAD`, `ValidateServiceName`), limits and
 defaults, and the `Wipe`/`IsZero` secret-memory helpers. Implementation packages import this one
@@ -61,11 +61,12 @@ ring, err := dek.Build(ctx, dek.Config{
 protector, err := ring.CreateProtector("orders")
 ```
 
-`Build` reads each key file through its `KeyWrapper` when the wrapper implements
-`hkdfguard.KeyFileReader` - the native key wrapper does, so the native library checks the file
-(see below) - and with `hkdfguard.ReadWrappedKeyFile` otherwise. Either way a file that isn't a
-wrapped key fails with an error wrapping `hkdfguard.ErrInvalidKeyFile` (`dek.ErrInvalidKeyFile` is
-the same sentinel).
+`Build` reads every key file through its `KeyWrapper` (`KeyWrapper.ReadKeyFile`), never with
+ordinary file I/O: whoever can replace a key file chooses the key new data is encrypted under, so
+reading one is part of the key wrapper's contract, and a wrapper must refuse a file another account
+could have written or replaced. The native key wrapper reads through the native library's checks
+(see below). A file that isn't a wrapped key fails with an error wrapping
+`hkdfguard.ErrInvalidKeyFile` (`dek.ErrInvalidKeyFile` is the same sentinel).
 
 Settings can also come from a file. `dek.Options` has the field names and units of the .NET
 port's `HkdfGuardOptions`, so one `appsettings.json` section configures both ports:
@@ -111,14 +112,47 @@ re-revealed in the background, fail-closed refresh policy, per-key encryption bu
 use the cipher-neutral errors in `hkdfguard` (`ErrAuthenticationFailed`, `ErrKeyAccessSuspended`,
 `ErrEncryptionLimitReached`, `ErrClosed`), so another cipher module can replace it unchanged.
 
+#### Encryption budget
+
+With random 96-bit nonces, AES-GCM is safe for about 2^32 encryptions under one key (NIST
+SP 800-38D). Each crypto provider counts the encryptions under its key, warns at 2^28, and
+refuses to encrypt past 2^31 (`aesgcm256.MaxEncryptionsPerKey`). Decryption is never limited.
+
+That count is kept per process, by design. It is exact for the key an application should encrypt
+with at runtime: an ephemeral key, generated at startup and held only in that process's memory, so
+no other process or restart ever adds to its use. Key files are different. They carry what the
+deployment pipeline encrypted and are meant to be decrypted at runtime; every process that loads a
+key file, and every restart, starts a fresh count for it.
+
+**For encrypt operations, add an ephemeral key** at a version above every key file
+(`EphemeralKeys: []int{2}` beside `KeyFiles: map[int]string{1: ...}` in `dek.Config`). New values are then encrypted under it, while the pipeline's values still decrypt
+under their key files. A value encrypted under an ephemeral key can't be decrypted once the process
+exits, which suits caches and other in-process data; never persist it.
+
+If an application does encrypt values that must outlive the process under a key file, its
+encryptions under that file are not counted together across instances and restarts. Bound them by
+deploying a new key file at a higher version regularly.
+
 ### `keywrapping/nativev1` (separate module)
 
 Go port of `HkdfGuard.KeyWrapping.V1`: a `hkdfguard.KeyWrapper` over the OS's native HkdfGuard KMS
 library (TPM2 on Linux, Secure Enclave on macOS, Platform Crypto Provider on Windows). The library
 is loaded only from its fixed install location, after verifying path ownership and permissions,
-the code signature (Authenticode / Developer ID), and the dynamic linker's environment. The Linux
+the code signature (Authenticode / Developer ID), and the dynamic linker's environment. On macOS
+the per-user location is found from the account database, never `$HOME`, and the library must be
+at least version 0.9.0 (its `LC_ID_DYLIB` current version, covered by the signature), so an older
+signed release can't be planted in its place. The Linux
 library is not content-pinned; verify a release with Sigstore/cosign (`gh attestation verify`)
 before installing it.
+
+Certificate revocation: on Windows, once the signature and its pins have passed, the loader asks
+WinVerifyTrust once more, now checking revocation across the signing chain and allowed to fetch
+revocation data over the network. It refuses the library only when a certificate is definitely
+revoked; if revocation can't be determined (offline, no data), it loads. A host whose network
+silently drops traffic, rather than refusing it, may stall once, on the first load, until that
+lookup times out. On macOS revocation isn't checked: the defences are the Developer ID and Team ID
+pins, the admin-only system install, and the minimum library version. A compromised signing
+identity is answered by a new release and a raised minimum version.
 
 ```go
 wrapper, err := nativev1.New("com.example.orders") // service must be provisioned first

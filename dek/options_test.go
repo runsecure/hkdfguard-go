@@ -34,7 +34,7 @@ func TestOptions_Valid_Passes(t *testing.T) {
 	o := validOptions()
 	o.KeyFiles = []KeyFileOptions{{Version: 1, Path: "/etc/app/key.v1"}}
 	o.EphemeralKeys = []int{2}
-	o.MaxRefreshFailures = intPtr(10)
+	o.MaxRefreshFailures = intPtr(hkdfguard.MaxAllowedRefreshFailures)
 	o.EphemeralKeyRotationHours = intPtr(MaxEphemeralKeyRotationHours)
 	o.EphemeralKeyRetentionHours = intPtr(24 * 365)
 
@@ -64,7 +64,8 @@ func TestOptions_RangesAreChecked(t *testing.T) {
 	}{
 		{func(o *Options) { o.KeyRefreshInterval = intPtr(0) }, "KeyRefreshInterval must be between 1 and 300"},
 		{func(o *Options) { o.KeyRefreshInterval = intPtr(301) }, "KeyRefreshInterval must be between 1 and 300"},
-		{func(o *Options) { o.MaxRefreshFailures = intPtr(0) }, "MaxRefreshFailures must be at least 1"},
+		{func(o *Options) { o.MaxRefreshFailures = intPtr(0) }, "MaxRefreshFailures must be between 1 and 100"},
+		{func(o *Options) { o.MaxRefreshFailures = intPtr(101) }, "MaxRefreshFailures must be between 1 and 100"},
 		{func(o *Options) { o.EphemeralKeyRotationHours = intPtr(0) }, "EphemeralKeyRotationHours must be between 1 and 1193"},
 		{func(o *Options) { o.EphemeralKeyRotationHours = intPtr(MaxEphemeralKeyRotationHours + 1) }, "EphemeralKeyRotationHours must be between 1 and 1193"},
 		{func(o *Options) { o.EphemeralKeyRetentionHours = intPtr(-1) }, "EphemeralKeyRetentionHours must be at least 1"},

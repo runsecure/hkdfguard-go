@@ -8,6 +8,34 @@ package nativev1
 #include <Security/Security.h>
 #include <stdlib.h>
 #include <string.h>
+#include <pwd.h>
+#include <unistd.h>
+#include <errno.h>
+
+// The effective user's home folder from the account database (getpwuid_r), never from $HOME.
+// Copies it into out (cap bytes) and returns 0, or returns -1 if there is no entry, it doesn't
+// fit, or the lookup failed.
+static int hg_account_home(char* out, size_t cap) {
+	struct passwd pwd;
+	struct passwd* result = NULL;
+	size_t size = 16 * 1024;
+	for (;;) {
+		char* buf = malloc(size);
+		if (buf == NULL)
+			return -1;
+		int rc = getpwuid_r(geteuid(), &pwd, buf, size, &result);
+		if (rc == ERANGE && size < 1024 * 1024) {
+			free(buf);
+			size *= 2;
+			continue;
+		}
+		int ok = rc == 0 && result != NULL && pwd.pw_dir != NULL && strlen(pwd.pw_dir) < cap;
+		if (ok)
+			strcpy(out, pwd.pw_dir);
+		free(buf);
+		return ok ? 0 : -1;
+	}
+}
 
 // SecStaticCodeCheckValidity against requirement, for every architecture in the file, with strict
 // validation. 0 (errSecSuccess) if valid and satisfied, otherwise the failing OSStatus.
@@ -49,6 +77,7 @@ done:
 import "C"
 
 import (
+	"io"
 	"os"
 	"runtime"
 	"unsafe"
@@ -66,8 +95,7 @@ func loadPlatformLibrary() (kmsLibrary, error) {
 		return nil, err
 	}
 
-	home, _ := os.UserHomeDir()
-	path, isSystem, err := macChoosePath(darwinProbe, home)
+	path, isSystem, err := macChoosePath(darwinProbe, darwinAccountHome())
 	if err != nil {
 		return nil, err
 	}
@@ -80,6 +108,9 @@ func loadPlatformLibrary() (kmsLibrary, error) {
 		return nil, err
 	}
 	if err := macVerifySignature(path, darwinCheckCodeSignature); err != nil {
+		return nil, err
+	}
+	if err := darwinRequireMinimumVersion(path); err != nil {
 		return nil, err
 	}
 	if err := macRefuseShadowing(os.Getenv, darwinExists); err != nil {
@@ -133,4 +164,31 @@ func darwinCheckCodeSignature(path, requirement string) int32 {
 	defer C.free(unsafe.Pointer(crequirement))
 
 	return int32(C.hg_check_code_signature(cpath, crequirement))
+}
+
+// darwinAccountHome is the per-user install's base folder: the effective user's home from the
+// account database, or "" if there is none usable.
+func darwinAccountHome() string {
+	buf := make([]byte, 4096)
+	ok := C.hg_account_home((*C.char)(unsafe.Pointer(&buf[0])), C.size_t(len(buf))) == 0
+	home := ""
+	if ok {
+		home = C.GoString((*C.char)(unsafe.Pointer(&buf[0])))
+	}
+	return macHomeFromAccount(home, ok)
+}
+
+// darwinRequireMinimumVersion reads the start of the verified file and refuses a release older
+// than macMinimumLibraryVersion.
+func darwinRequireMinimumVersion(path string) error {
+	file, err := os.Open(path)
+	if err != nil {
+		return untrustedCause(err, "could not open '%s' to read its version", path)
+	}
+	defer file.Close()
+	data, err := io.ReadAll(io.LimitReader(file, macVersionReadLimit))
+	if err != nil {
+		return untrustedCause(err, "could not read '%s' to find its version", path)
+	}
+	return macRequireMinimumVersion(path, data)
 }

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"strings"
 	"sync"
 	"testing"
@@ -47,6 +48,7 @@ func TestNew_BadArgumentsOrACancelledContext_NeverReachTheKeyWrapper(t *testing.
 		{"negative expiry", context.Background(), -time.Second, hkdfguard.RefreshFailurePolicy{}, ErrInvalidExpiry},
 		{"expiry over 300s", context.Background(), 301 * time.Second, hkdfguard.RefreshFailurePolicy{}, ErrInvalidExpiry},
 		{"fail closed after 0", context.Background(), time.Minute, hkdfguard.FailClosedAfter(0), hkdfguard.ErrInvalidRefreshFailurePolicy},
+		{"fail closed after 101", context.Background(), time.Minute, hkdfguard.FailClosedAfter(101), hkdfguard.ErrInvalidRefreshFailurePolicy},
 		{"cancelled", cancelled, time.Minute, hkdfguard.RefreshFailurePolicy{}, context.Canceled},
 	}
 	for _, c := range cases {
@@ -497,5 +499,99 @@ func TestPolicy_DefaultsToFailClosedAfterThree(t *testing.T) {
 
 	if limit, failsClosed := p.RefreshFailurePolicy().MaxFailures(); !failsClosed || limit != 3 {
 		t.Errorf("policy = %d, %v", limit, failsClosed)
+	}
+}
+
+// panickingHandler is a log handler that panics on every record.
+type panickingHandler struct{}
+
+func (panickingHandler) Enabled(context.Context, slog.Level) bool  { return true }
+func (panickingHandler) Handle(context.Context, slog.Record) error { panic("logging sink is down") }
+func (h panickingHandler) WithAttrs([]slog.Attr) slog.Handler      { return h }
+func (h panickingHandler) WithGroup(string) slog.Handler           { return h }
+
+func TestFailClosed_WhenTheLogHandlerPanics_StillSuspendsAtTheLimit(t *testing.T) {
+	wrapper := &fakeKeyWrapper{fixedKey: randomKey(t)}
+	p, r := newTestProvider(t, wrapper, hkdfguard.FailClosedAfter(2), WithLogger(slog.New(panickingHandler{})))
+
+	wrapper.failWith(errKEK)
+	r.tick(t)
+	r.tick(t)
+
+	if !p.KeyAccessSuspended() {
+		t.Fatal("not suspended after two failures with a panicking log handler")
+	}
+
+	// A panicking "resumed" log can't turn a successful refresh into a failure either.
+	wrapper.failWith(nil)
+	r.tick(t)
+	if p.KeyAccessSuspended() {
+		t.Error("still suspended after a successful refresh")
+	}
+}
+
+func TestFailClosed_WhenTheKeyWrapperHangs_CountsEachTimedOutRefresh_WithoutPilingUpCalls(t *testing.T) {
+	logger, logs := newCapturingLogger()
+	wrapper := &fakeKeyWrapper{fixedKey: randomKey(t)}
+	p, r := newTestProvider(t, wrapper, hkdfguard.FailClosedAfter(2), WithLogger(logger), withRefreshTimeout(50*time.Millisecond))
+	ciphertext := mustEncrypt(t, p, []byte("survives"), nil)
+	release := make(chan struct{})
+	wrapper.hangUntil(release)
+	callsBefore, _ := wrapper.calls()
+
+	r.tick(t) // the reveal hangs and times out: failure 1
+	if p.KeyAccessSuspended() {
+		t.Fatal("suspended after one failure of two")
+	}
+	r.tick(t) // the abandoned reveal is still running: failure 2, and no second call
+
+	if !p.KeyAccessSuspended() {
+		t.Fatal("not suspended after two timed-out refreshes")
+	}
+	if calls, _ := wrapper.calls(); calls != callsBefore+1 {
+		t.Errorf("%d unwrap calls while the key wrapper hung; want 1", calls-callsBefore)
+	}
+	failures := logs.withEventID(3)
+	if len(failures) != 2 {
+		t.Fatalf("refresh failures logged: %d", len(failures))
+	}
+
+	// The key wrapper recovers: the abandoned call returns, its key discarded, and the next
+	// refresh resumes service with the same DEK.
+	wrapper.hangUntil(nil)
+	close(release)
+	deadline := time.Now().Add(5 * time.Second)
+	for p.KeyAccessSuspended() && time.Now().Before(deadline) {
+		r.tick(t)
+	}
+	if p.KeyAccessSuspended() {
+		t.Fatal("still suspended after the key wrapper recovered")
+	}
+	if got := mustDecrypt(t, p, ciphertext, nil); string(got) != "survives" {
+		t.Errorf("decrypted %q", got)
+	}
+}
+
+func TestClose_WhileTheKeyWrapperHangs_ReturnsWithoutWaitingForIt(t *testing.T) {
+	wrapper := &fakeKeyWrapper{}
+	r := newRefresher()
+	p, err := New(context.Background(), wrapper, []byte("wrapped"), time.Minute, hkdfguard.FailClosedAfter(3), r.options()...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	release := make(chan struct{})
+	defer close(release)
+	wrapper.hangUntil(release)
+	r.ticks <- time.Now() // a refresh is now stuck in the key wrapper, for up to a minute
+
+	closed := make(chan struct{})
+	go func() { _ = p.Close(); close(closed) }()
+	select {
+	case <-closed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Close waited for a hung key wrapper")
+	}
+	if _, err := p.Encrypt(context.Background(), []byte("x"), nil, make([]byte, 64)); !errors.Is(err, hkdfguard.ErrClosed) {
+		t.Errorf("Encrypt after Close: %v", err)
 	}
 }

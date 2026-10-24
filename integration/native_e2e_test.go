@@ -265,7 +265,7 @@ func TestAKeyFile_IsReadThroughTheNativeLibrary_StillWrapped(t *testing.T) {
 	}
 
 	// What dek.Build does for each key file.
-	read, err := hkdfguard.ReadKeyFile(ctx, wrapper, keyFile)
+	read, err := wrapper.ReadKeyFile(ctx, keyFile)
 	if err != nil {
 		t.Fatal(err)
 	}

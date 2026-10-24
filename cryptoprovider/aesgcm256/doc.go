@@ -12,7 +12,9 @@
 // .NET port. With random nonces a key is limited to MaxEncryptionsPerKey encryptions, counted per
 // key across every provider in the process.
 //
-// Memory: the revealed key is held in a []byte that is zeroed when its session is closed, but Go's
-// crypto/aes keeps an expanded key schedule inside the cipher it builds, which can't be zeroed and
-// stays in the heap until the garbage collector reclaims it.
+// Memory: the revealed key is held in a []byte that is zeroed when its session is closed, but two
+// copies are outside this package's reach. Go's crypto/aes keeps an expanded key schedule inside the
+// cipher it builds, and the HMAC that names a key's encryption budget keeps the key bytes in its
+// hash state; neither can be zeroed, and both stay in the heap until the garbage collector reclaims
+// them. Process hardening, which blocks core dumps and debugger attachment, keeps them out of reach.
 package aesgcm256

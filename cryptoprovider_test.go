@@ -2,6 +2,7 @@ package hkdfguard_test
 
 import (
 	"errors"
+	"math"
 	"testing"
 
 	"github.com/runsecure/hkdfguard-go"
@@ -35,11 +36,20 @@ func TestRefreshFailurePolicy_FailClosedAfter(t *testing.T) {
 	}
 }
 
-func TestRefreshFailurePolicy_FailClosedAfterBelowOne_IsInvalid(t *testing.T) {
-	for _, n := range []int{0, -1} {
+func TestRefreshFailurePolicy_FailClosedAfterOutsideOneToOneHundred_IsInvalid(t *testing.T) {
+	for _, n := range []int{0, -1, hkdfguard.MaxAllowedRefreshFailures + 1, math.MaxInt32} {
 		if err := hkdfguard.FailClosedAfter(n).Validate(); !errors.Is(err, hkdfguard.ErrInvalidRefreshFailurePolicy) {
 			t.Errorf("FailClosedAfter(%d).Validate() = %v, want ErrInvalidRefreshFailurePolicy", n, err)
 		}
+	}
+}
+
+func TestRefreshFailurePolicy_FailClosedAfterOneHundred_IsValid(t *testing.T) {
+	if hkdfguard.MaxAllowedRefreshFailures != 100 {
+		t.Fatalf("MaxAllowedRefreshFailures = %d, want 100", hkdfguard.MaxAllowedRefreshFailures)
+	}
+	if err := hkdfguard.FailClosedAfter(100).Validate(); err != nil {
+		t.Errorf("FailClosedAfter(100).Validate() = %v", err)
 	}
 }
 

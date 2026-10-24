@@ -74,6 +74,7 @@ func TestFactory_BadArgumentsOrACancelledContext_NeverReachTheKeyWrapper(t *test
 		{context.Background(), 0, hkdfguard.RefreshFailurePolicy{}},
 		{context.Background(), 301 * time.Second, hkdfguard.RefreshFailurePolicy{}},
 		{context.Background(), time.Minute, hkdfguard.FailClosedAfter(0)},
+		{context.Background(), time.Minute, hkdfguard.FailClosedAfter(101)},
 		{cancelled, time.Minute, hkdfguard.RefreshFailurePolicy{}},
 	}
 	for i, c := range cases {

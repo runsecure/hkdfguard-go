@@ -24,9 +24,8 @@
 // On macOS and Linux the library is loaded through cgo (dlopen), so those builds need
 // CGO_ENABLED=1 and a C toolchain. Windows needs neither.
 //
-// Key files are read through the native library too: KeyWrapper implements
-// hkdfguard.KeyFileReader, so dek.Build reads each key file with hkdfguard_open_file instead of Go
-// file I/O. Besides checking the file's size and format, the native library refuses a file another
+// Key files are read through the native library too: KeyWrapper.ReadKeyFile, which dek.Build
+// calls for each key file, reads with hkdfguard_open_file instead of Go file I/O. Besides checking the file's size and format, the native library refuses a file another
 // account could have written or replaced (a link or reparse point in its path, an 8.3 short name or
 // network path on Windows, or a file or folder writable by anyone else) and one holding what looks
 // like an unwrapped key. A refusal is a *KeyFileError, matchable with errors.Is against
