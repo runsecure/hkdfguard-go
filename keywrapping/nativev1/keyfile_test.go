@@ -149,19 +149,19 @@ func TestReadKeyFile_ALibraryWithoutTheCall_IsUnsupported_NotReadAnotherWay(t *t
 }
 
 func TestTheKeyWrapper_ReadsKeyFilesForAKeyRing(t *testing.T) {
-	// hkdfguard.ReadKeyFile - what dek.Build calls for each key file - goes through the wrapper,
-	// and surfaces its refusals unchanged.
+	// hkdfguard.KeyWrapper.ReadKeyFile - what dek.Build calls for each key file - reaches the
+	// native library, and surfaces its refusals unchanged.
 	payload := bytes.Repeat([]byte{0x42}, 132)
 	library := &fakeLibrary{openFilePayload: payload}
-	w := mustWrapper(t, "service.k", library)
+	var w hkdfguard.KeyWrapper = mustWrapper(t, "service.k", library)
 
-	read, err := hkdfguard.ReadKeyFile(context.Background(), w, "/nowhere/v1.bin")
+	read, err := w.ReadKeyFile(context.Background(), "/nowhere/v1.bin")
 	if err != nil || !bytes.Equal(read, payload) || len(library.openFilePaths) != 1 {
 		t.Errorf("ReadKeyFile = %d bytes, %v after %d native calls", len(read), err, len(library.openFilePaths))
 	}
 
 	library.openFileStatus = errFileUntrusted
-	if _, err := hkdfguard.ReadKeyFile(context.Background(), w, "/nowhere/v1.bin"); !errors.Is(err, fs.ErrPermission) {
+	if _, err := w.ReadKeyFile(context.Background(), "/nowhere/v1.bin"); !errors.Is(err, fs.ErrPermission) {
 		t.Errorf("a refusal: %v; want fs.ErrPermission", err)
 	}
 }

@@ -57,6 +57,11 @@ type CryptoProviderFactory interface {
 // closed, unless configured otherwise.
 const DefaultMaxRefreshFailures = 3
 
+// MaxAllowedRefreshFailures is the largest fail-closed limit accepted. 100 failures at the longest,
+// 300-second refresh interval is about 8 h 20 min before a revoked KEK suspends key access; a larger
+// value would quietly turn fail-closed into fail-open. To fail open, say so explicitly with FailOpen.
+const MaxAllowedRefreshFailures = 100
+
 // RefreshFailurePolicy says what a CryptoProvider does when re-revealing its key through the KEK
 // keeps failing. Failing closed after n consecutive failures zeroes the key and refuses every
 // operation until a refresh succeeds, so revoking the KEK reaches a running process; failing open
@@ -71,7 +76,7 @@ type RefreshFailurePolicy struct {
 }
 
 // FailClosedAfter returns a policy that fails closed once maxFailures consecutive refreshes have
-// failed. maxFailures must be at least 1; Validate reports it otherwise.
+// failed. maxFailures must be 1 to MaxAllowedRefreshFailures; Validate reports it otherwise.
 func FailClosedAfter(maxFailures int) RefreshFailurePolicy {
 	return RefreshFailurePolicy{maxFailures: maxFailures, set: true}
 }
@@ -94,10 +99,10 @@ func (p RefreshFailurePolicy) MaxFailures() (int, bool) {
 	}
 }
 
-// Validate reports a fail-closed policy whose limit is below 1.
+// Validate reports a fail-closed policy whose limit is not 1 to MaxAllowedRefreshFailures.
 func (p RefreshFailurePolicy) Validate() error {
-	if limit, failsClosed := p.MaxFailures(); failsClosed && limit < 1 {
-		return fmt.Errorf("%w: MaxRefreshFailures must be at least 1, got %d", ErrInvalidRefreshFailurePolicy, limit)
+	if limit, failsClosed := p.MaxFailures(); failsClosed && (limit < 1 || limit > MaxAllowedRefreshFailures) {
+		return fmt.Errorf("%w: MaxRefreshFailures must be between 1 and %d, got %d", ErrInvalidRefreshFailurePolicy, MaxAllowedRefreshFailures, limit)
 	}
 	return nil
 }

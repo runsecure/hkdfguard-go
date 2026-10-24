@@ -27,7 +27,9 @@ HkdfGuard never holds your master key. There are two keys:
   leaves it. Each KEK is identified by a **service name**, such as `com.example.myapp`.
 - A **DEK** (data encryption key) is what actually encrypts your data, with AES-256-GCM. On disk
   it exists only *wrapped*, encrypted under the KEK. Your process asks the native library to unwrap
-  it at startup and holds it in memory that is zeroed when you're done.
+  it at startup and holds it in a buffer that is zeroed when you're done. Go's AES implementation
+  keeps its own expanded copy of the key, which can't be zeroed (see the `aesgcm256` package
+  documentation).
 
 Two separate things are installed:
 
@@ -53,11 +55,14 @@ Check that it installed:
 Get-AuthenticodeSignature "$env:ProgramFiles\HkdfGuard\v1\HkdfGuard.dll" | Select-Object Status, SignerCertificate
 ```
 
-`Status` must be `Valid`.
+`Status` must be `Valid`. When it loads the library, `nativev1` also checks whether the signing
+certificate has been revoked, fetching revocation data if the host can reach it. Only a definite
+revocation stops the load; an offline host still starts.
 
 **macOS:** install the native package system-wide, to `/Library/Application Support/HkdfGuard/v1`.
 (A per-user install at `~/.hkdfguard/v1` is also loaded, but only when there is no system-wide
-one.)
+one. Its home folder is your account's, from the account database; setting `$HOME` doesn't move
+it. Either install must be version 0.9.0 or later.)
 
 > **TODO (maintainer):** give the package's file name and where to download it.
 
@@ -196,7 +201,8 @@ The launch code is 0000
 What happened:
 
 - `dek.Build` asked the native library to generate a fresh DEK and wrap it under your KEK. It then
-  unwrapped it into memory the library zeroes when the ring is closed. The plaintext DEK was never
+  unwrapped it into a buffer the library zeroes when the ring is closed, apart from the expanded
+  copy Go's AES implementation keeps. The plaintext DEK was never
   on disk.
 - `enc::v1::...` is the stored form: `v1` is the key version, and the rest is the AES-GCM
   ciphertext in base64. It is the same format the .NET libraries write and read.
@@ -220,8 +226,9 @@ usual sense, but its permissions still matter. Anyone who can replace it control
 application encrypts new data with. So the Go library reads every key file through the native
 library (`hkdfguard_open_file`), which refuses:
 
-- a file, or a folder above it, that an account other than SYSTEM, Administrators,
-  TrustedInstaller (Windows) or the account reading it could write or replace, and a path through a
+- a file, or a folder above it, that an untrusted account could write or replace. Trusted are
+  root or SYSTEM, Administrators and TrustedInstaller, and the deployers (Windows and Linux) or the
+  reading account (macOS); under the developer security model, the reading account everywhere. and a path through a
   symbolic link, junction or other reparse point, an 8.3 short name (`PROGRA~1`), or a network,
   mapped or SUBST drive - a folder created directly under `C:\` inherits "Authenticated Users:
   Modify" and is refused until its permissions are narrowed;
@@ -297,23 +304,42 @@ func createKeyFile(toolPath, serviceName, keyFilePath, group string) error {
 }
 ```
 
+Before you call it on Windows, prepare the folder it writes to. The native library refuses a key
+file anywhere under `C:\ProgramData`, where every user may create entries, and in a folder created
+directly under `C:\` with its default permissions. From an elevated PowerShell, give the key files
+a folder of their own, with inherited permissions removed:
+
+```powershell
+New-Item -ItemType Directory -Force C:\HkdfGuardKeys\myapp | Out-Null
+icacls C:\HkdfGuardKeys /inheritance:r /grant:r "*S-1-5-18:(OI)(CI)F" "*S-1-5-32-544:(OI)(CI)F" "*S-1-5-32-545:(OI)(CI)RX" "HkdfGuardDeployers:(OI)(CI)M"
+icacls C:\HkdfGuardKeys /setowner "*S-1-5-32-544" /T
+```
+
+Then make the call from an elevated prompt, or as a member of `HkdfGuardDeployers`. Under the
+production security model, the Windows default, `wrap` refuses any other account, and the library
+doesn't trust a key file that the application's own account wrote. The native library's
+[administration guide](https://github.com/runsecure/hkdfguard-native-windows/blob/main/docs/admin-guide.md#where-to-keep-key-files)
+explains both rules.
+
 Call it once. On Windows:
 
 ```go
 err := createKeyFile(
 	filepath.Join(os.Getenv("ProgramFiles"), `HkdfGuard\v1\hkdfguard.exe`),
 	"com.example.myapp",
-	`C:\ProgramData\MyApp\keys\v1.key`,
+	`C:\HkdfGuardKeys\myapp\v1.key`,
 	"HkdfGuardUsers")
 ```
 
-On macOS:
+On macOS, as the account that provisioned the KEK, after creating the folder with
+`mkdir -p -m 0700 ~/Library/Application\ Support/MyApp/keys` (the native library trusts a key
+file in a folder owned by you or root that no one else can write):
 
 ```go
 err := createKeyFile(
 	"/Library/Application Support/HkdfGuard/v1/hkdfguard",
 	"com.example.myapp",
-	"/Library/Application Support/MyApp/keys/v1.key",
+	filepath.Join(os.Getenv("HOME"), "Library/Application Support/MyApp/keys/v1.key"),
 	"")
 ```
 
@@ -341,6 +367,12 @@ The map key you give `KeyFiles` is the version that appears as `v1` in every val
 rotate, add a `v2.key` as `KeyFiles: map[int]string{1: v1Path, 2: v2Path}`. New values use the
 highest version, and older values still decrypt as long as their key file stays registered.
 
+> This step makes the key file the key your program encrypts with, so you can watch a value survive
+> a restart. In an application, key files hold what your deployment pipeline encrypted, and are
+> read at runtime to decrypt it. For values the application encrypts while it runs, add an
+> ephemeral key at a higher version (`EphemeralKeys: []int{2}`): its encryption budget is counted exactly, in the one
+> process that holds it. See the README's encryption budget section.
+
 The same settings can come from a file shared with the .NET port: `dek.OptionsFromJSON` reads the
 `HkdfGuard` section of an `appsettings.json`, with the same field names (`ServiceName`,
 `KeyRefreshInterval`, `KeyFiles`, `EphemeralKeys`, ...), and `Options.Config` turns it into the
@@ -356,7 +388,7 @@ the same on Windows, Linux and macOS.
 | You see | Cause | Fix |
 |---|---|---|
 | `nativev1.ErrNotInstalled` | The native package isn't installed at its fixed location | Step 1 |
-| `nativev1.ErrUntrusted` | The installed library, or a folder above it, failed verification: wrong signature, writable by non-administrators, or (macOS) a `DYLD_LIBRARY_PATH` entry shadows it | Reinstall the native package; don't change that folder's permissions; clear the linker variables |
+| `nativev1.ErrUntrusted` | The installed library, or a folder above it, failed verification: wrong signature, writable by non-administrators, or (macOS) a `DYLD_LIBRARY_PATH` entry shadows it, or `DYLD_INSERT_LIBRARIES` or another dyld variable that injects or substitutes code is set | Reinstall the native package; don't change that folder's permissions; clear the linker variables |
 | `nativev1.ErrUnsupportedPlatform` | Built with `CGO_ENABLED=0` on macOS or Linux, or an Intel Mac / an amd64 binary under Rosetta | Build with `CGO_ENABLED=1` for `darwin/arm64` |
 | `StatusError` `-17` | No KEK is provisioned for this service name | Step 2, with the same service name |
 | `StatusError` `-18` (Windows) | The KEK exists, but this account may not use it | Add the account to `HkdfGuardUsers`, then sign out and in |

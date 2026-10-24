@@ -38,6 +38,7 @@ type fakeKeyWrapper struct {
 	writtenOverride *int
 	unwrapCalls     int
 	generateCalls   int
+	block           chan struct{} // when set, Unwrap waits for it to close: a hung key wrapper
 }
 
 func (w *fakeKeyWrapper) Wrap(context.Context, []byte, []byte) (int, error) {
@@ -46,8 +47,14 @@ func (w *fakeKeyWrapper) Wrap(context.Context, []byte, []byte) (int, error) {
 
 func (w *fakeKeyWrapper) Unwrap(_ context.Context, _, result []byte) (int, error) {
 	w.mu.Lock()
-	defer w.mu.Unlock()
 	w.unwrapCalls++
+	block := w.block
+	w.mu.Unlock()
+	if block != nil {
+		<-block // deliberately ignores ctx, as a native call does
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
 	if w.unwrapErr != nil {
 		return 0, w.unwrapErr
 	}
@@ -72,10 +79,20 @@ func (w *fakeKeyWrapper) GenerateAndWrap(_ context.Context, result []byte) (int,
 	return 32, nil
 }
 
+func (w *fakeKeyWrapper) ReadKeyFile(context.Context, string) ([]byte, error) {
+	return nil, errors.New("unused: these tests read no key files")
+}
+
 func (w *fakeKeyWrapper) failWith(err error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.unwrapErr = err
+}
+
+func (w *fakeKeyWrapper) hangUntil(release chan struct{}) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.block = release
 }
 
 func (w *fakeKeyWrapper) revealBytes(n int) {

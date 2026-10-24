@@ -31,7 +31,7 @@ type Options struct {
 	KeyRefreshInterval *int `json:"KeyRefreshInterval,omitempty"`
 
 	// MaxRefreshFailures is how many consecutive failed refreshes a key tolerates before failing
-	// closed; at least 1. Unset keeps hkdfguard.DefaultMaxRefreshFailures. Can't be combined with
+	// closed; 1 to hkdfguard.MaxAllowedRefreshFailures (100). Unset keeps hkdfguard.DefaultMaxRefreshFailures. Can't be combined with
 	// FailOpenOnRefreshFailure.
 	MaxRefreshFailures *int `json:"MaxRefreshFailures,omitempty"`
 
@@ -79,8 +79,8 @@ func (o Options) Validate() error {
 	if o.KeyRefreshInterval != nil && (*o.KeyRefreshInterval < 1 || *o.KeyRefreshInterval > 300) {
 		fail("KeyRefreshInterval must be between 1 and 300 seconds.")
 	}
-	if o.MaxRefreshFailures != nil && *o.MaxRefreshFailures < 1 {
-		fail("MaxRefreshFailures must be at least 1.")
+	if o.MaxRefreshFailures != nil && (*o.MaxRefreshFailures < 1 || *o.MaxRefreshFailures > hkdfguard.MaxAllowedRefreshFailures) {
+		fail("MaxRefreshFailures must be between 1 and %d.", hkdfguard.MaxAllowedRefreshFailures)
 	}
 	if o.EphemeralKeyRotationHours != nil && (*o.EphemeralKeyRotationHours < 1 || *o.EphemeralKeyRotationHours > MaxEphemeralKeyRotationHours) {
 		fail("EphemeralKeyRotationHours must be between 1 and %d.", MaxEphemeralKeyRotationHours)

@@ -63,9 +63,11 @@ func TestBuild_RefusesAnIncompleteOrOutOfRangeConfig(t *testing.T) {
 		t.Errorf("bad service name: %v", err)
 	}
 	badPolicy := valid
-	badPolicy.RefreshFailurePolicy = hkdfguard.FailClosedAfter(0)
-	if _, err := Build(bg, badPolicy); !errors.Is(err, hkdfguard.ErrInvalidRefreshFailurePolicy) {
-		t.Errorf("bad policy: %v", err)
+	for _, limit := range []int{0, hkdfguard.MaxAllowedRefreshFailures + 1} {
+		badPolicy.RefreshFailurePolicy = hkdfguard.FailClosedAfter(limit)
+		if _, err := Build(bg, badPolicy); !errors.Is(err, hkdfguard.ErrInvalidRefreshFailurePolicy) {
+			t.Errorf("bad policy %d: %v", limit, err)
+		}
 	}
 	if len(f.providers()) != 0 {
 		t.Error("an invalid config created providers")
@@ -184,7 +186,7 @@ func TestBuild_WhenCancelled_CreatesNothing(t *testing.T) {
 	}
 }
 
-// keyFileReadingWrapper is a KeyWrapper that reads its own key files (hkdfguard.KeyFileReader).
+// keyFileReadingWrapper is a KeyWrapper whose key-file reads the test controls.
 type keyFileReadingWrapper struct {
 	nopKeyWrapper
 	paths    []string
@@ -200,7 +202,7 @@ func (w *keyFileReadingWrapper) ReadKeyFile(_ context.Context, path string) ([]b
 	return w.contents[path], nil
 }
 
-func TestBuild_ReadsEachKeyFileThroughAWrapperThatReadsItsOwn(t *testing.T) {
+func TestBuild_ReadsEachKeyFileThroughTheKeyWrapper(t *testing.T) {
 	f := &recordingFactory{t: t}
 	config := baseConfig(f)
 	// Paths that don't exist: only the wrapper can produce their bytes.
@@ -237,19 +239,23 @@ func TestBuild_AKeyFileTheWrapperRefuses_FailsTheBuild_WithTheWrappersError(t *t
 	}
 }
 
-func TestBuild_WithAWrapperThatDoesNotReadKeyFiles_ReadsThemItself(t *testing.T) {
-	// nopKeyWrapper doesn't implement hkdfguard.KeyFileReader.
-	if _, ok := any(nopKeyWrapper{}).(hkdfguard.KeyFileReader); ok {
-		t.Fatal("nopKeyWrapper reads key files")
-	}
-	f := &recordingFactory{t: t}
-	config := baseConfig(f)
-	config.KeyFiles = map[int]string{1: writeKeyFile(t, nil)}
-
-	if _, err := Build(bg, config); !errors.Is(err, ErrInvalidKeyFile) {
-		t.Errorf("an empty key file: %v; want ErrInvalidKeyFile", err)
-	}
+func TestBuild_ReportsAKeyFileTheWrapperRefusesAsInvalid_WithHkdfguardsSentinel(t *testing.T) {
 	if ErrInvalidKeyFile != hkdfguard.ErrInvalidKeyFile {
 		t.Error("dek.ErrInvalidKeyFile is not hkdfguard.ErrInvalidKeyFile")
+	}
+}
+
+func TestBuild_RefusesAWrappedKeyThatIsEmptyOrOverTheLimit_WhateverTheKeyWrapper(t *testing.T) {
+	for _, size := range []int{0, hkdfguard.MaxWrappedKeyBytes + 1} {
+		factory := &recordingFactory{t: t}
+		config := baseConfig(factory)
+		config.KeyFiles = map[int]string{1: writeKeyFile(t, make([]byte, size))}
+		ring, err := Build(bg, config)
+		if !errors.Is(err, hkdfguard.ErrInvalidKeyFile) {
+			if ring != nil {
+				_ = ring.Close()
+			}
+			t.Errorf("a %d-byte wrapped key: %v; want hkdfguard.ErrInvalidKeyFile", size, err)
+		}
 	}
 }

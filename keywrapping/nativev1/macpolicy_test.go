@@ -363,9 +363,32 @@ func TestMacVerifySignature_RefusesAnyFailure(t *testing.T) {
 
 // --- What dyld loads ------------------------------------------------------------------------
 
+// dyldLibraryPath is a getenv that sets DYLD_LIBRARY_PATH alone.
+func dyldLibraryPath(searchPath string) func(string) string {
+	return func(name string) string {
+		if name == "DYLD_LIBRARY_PATH" {
+			return searchPath
+		}
+		return ""
+	}
+}
+
+func TestMacRefuseShadowing_Refuses_WhenADyldVariableThatInjectsOrSubstitutesCodeIsSet(t *testing.T) {
+	for _, variable := range []string{"DYLD_INSERT_LIBRARIES", "DYLD_FRAMEWORK_PATH", "DYLD_VERSIONED_LIBRARY_PATH", "DYLD_VERSIONED_FRAMEWORK_PATH", "DYLD_IMAGE_SUFFIX"} {
+		err := macRefuseShadowing(func(name string) string {
+			if name == variable {
+				return "/tmp/inject.dylib"
+			}
+			return ""
+		}, func(string) bool { return false })
+
+		requireUntrusted(t, err, variable)
+	}
+}
+
 func TestMacRefuseShadowing_Allows_WhenNothingOnDyldLibraryPathHasTheLibrarysName(t *testing.T) {
 	for _, searchPath := range []string{"", "/opt/lib:/usr/local/lib"} {
-		if err := macRefuseShadowing(func(string) string { return searchPath }, func(string) bool { return false }); err != nil {
+		if err := macRefuseShadowing(dyldLibraryPath(searchPath), func(string) bool { return false }); err != nil {
 			t.Errorf("%q: %v", searchPath, err)
 		}
 	}
@@ -374,17 +397,17 @@ func TestMacRefuseShadowing_Allows_WhenNothingOnDyldLibraryPathHasTheLibrarysNam
 func TestMacRefuseShadowing_Refuses_WhenADyldLibraryPathDirectoryHoldsTheLibrarysName(t *testing.T) {
 	const decoy = "/tmp/decoy/libhkdfguard.dylib"
 	for _, searchPath := range []string{"/tmp/decoy", "/opt/lib:/tmp/decoy/:/usr/local/lib"} {
-		err := macRefuseShadowing(func(string) string { return searchPath }, func(p string) bool { return p == decoy })
+		err := macRefuseShadowing(dyldLibraryPath(searchPath), func(p string) bool { return p == decoy })
 
 		requireUntrusted(t, err, decoy, "DYLD_LIBRARY_PATH")
 	}
 }
 
-func TestMacRefuseShadowing_OnlyConsultsDyldLibraryPath(t *testing.T) {
+func TestMacRefuseShadowing_ConsultsOnlyTheDyldVariablesItChecks(t *testing.T) {
 	var asked []string
 	_ = macRefuseShadowing(func(name string) string { asked = append(asked, name); return "" }, func(string) bool { return true })
 
-	if !slices.Equal(asked, []string{"DYLD_LIBRARY_PATH"}) {
+	if !slices.Equal(asked, append(slices.Clone(macRefusedDyldVariables), "DYLD_LIBRARY_PATH")) {
 		t.Errorf("asked %v", asked)
 	}
 }
