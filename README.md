@@ -138,10 +138,12 @@ deploying a new key file at a higher version regularly.
 Go port of `HkdfGuard.KeyWrapping.V1`: a `hkdfguard.KeyWrapper` over the OS's native HkdfGuard KMS
 library (TPM2 on Linux, Secure Enclave on macOS, Platform Crypto Provider on Windows). The library
 is loaded only from its fixed install location, after verifying path ownership and permissions,
-the code signature (Authenticode / Developer ID), and the dynamic linker's environment. On macOS
+the code signature (Authenticode / Developer ID), and the dynamic linker's environment; after
+loading, the file the OS actually mapped must be the verified one on every platform. On macOS
 the per-user location is found from the account database, never `$HOME`, and the library must be
 at least version 0.9.0 (its `LC_ID_DYLIB` current version, covered by the signature), so an older
-signed release can't be planted in its place. The Linux
+signed release can't be planted in its place. On Windows the same 0.9.0 floor applies to
+`HkdfGuard.dll`'s signed version resource, and a DLL with none is refused. The Linux
 library is not content-pinned; verify a release with Sigstore/cosign (`gh attestation verify`)
 before installing it.
 

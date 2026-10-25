@@ -279,3 +279,24 @@ func TestWindows_KEKExists_AnswersForAnUnprovisionedService(t *testing.T) {
 		t.Errorf("undescribed status %d", status)
 	}
 }
+
+func TestWindows_TheInstalledLibrary_CarriesAVersionResource_AtLeastTheMinimum(t *testing.T) {
+	path := installedWindowsLibraryPath(t)
+	version, ok := winReadFileVersion(path)
+	if !ok {
+		t.Fatalf("%s carries no readable version resource", path)
+	}
+	if err := winRequireMinimumVersion(path, version, ok); err != nil {
+		t.Error(err)
+	}
+}
+
+func TestWindows_AFileWithNoVersionResource_ReadsAsNone(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "plain.dll")
+	if err := os.WriteFile(path, []byte("MZ not really a PE image"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if version, ok := winReadFileVersion(path); ok {
+		t.Errorf("read version %v from a file with no version resource", version)
+	}
+}
