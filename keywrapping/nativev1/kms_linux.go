@@ -58,6 +58,9 @@ func loadPlatformLibrary() (kmsLibrary, error) {
 	}); err != nil {
 		return nil, err
 	}
+	if err := linuxVerifyBeforeLoading(path, initial); err != nil {
+		return nil, err
+	}
 
 	handle, err := dlOpen(path)
 	if err != nil {

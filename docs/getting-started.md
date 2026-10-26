@@ -212,6 +212,8 @@ What happened:
   the KEK stops being available (it was deleted, or your account lost access), encryption and
   decryption stop after three failed checks, about three minutes, until access returns. That is
   the default `RefreshFailurePolicy`; `hkdfguard.FailOpen()` keeps the last good key instead.
+  The interval is also each check's deadline: a check that takes longer counts as failed, so
+  don't go below about 10 seconds on a TPM, which can be slow to answer when it is busy.
 - Plaintext travels as `[]byte`, never as a `string`, so it can be zeroed: `hkdfguard.Wipe`
   clears the buffer when you are done, and `Encrypt` zeroes what it was given.
 

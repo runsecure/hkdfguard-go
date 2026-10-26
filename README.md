@@ -143,7 +143,10 @@ loading, the file the OS actually mapped must be the verified one on every platf
 the per-user location is found from the account database, never `$HOME`, and the library must be
 at least version 0.9.0 (its `LC_ID_DYLIB` current version, covered by the signature), so an older
 signed release can't be planted in its place. On Windows the same 0.9.0 floor applies to
-`HkdfGuard.dll`'s signed version resource, and a DLL with none is refused. The Linux
+`HkdfGuard.dll`'s signed version resource, and a DLL with none is refused. On Linux, before
+loading, the process's own dynamic linker is asked in list mode (`ld.so --list`, what `ldd` uses)
+where it would find every library `libhkdfguard.so.1` pulls in; each must pass the same ownership
+checks, so a dependency found somewhere writable is refused before any of its code runs. The Linux
 library is not content-pinned; verify a release with Sigstore/cosign (`gh attestation verify`)
 before installing it.
 
