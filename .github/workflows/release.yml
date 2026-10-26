@@ -17,6 +17,8 @@
 #   git tag v0.1.0 && git push origin v0.1.0                              the root module
 #   git tag cryptoprovider/aesgcm256/v0.1.0 && git push origin cryptoprovider/aesgcm256/v0.1.0
 #   git tag keywrapping/nativev1/v0.1.0 && git push origin keywrapping/nativev1/v0.1.0
+#   git tag keywrapping/awskms/v0.1.0 && git push origin keywrapping/awskms/v0.1.0
+#   git tag securefile/v0.1.0 && git push origin securefile/v0.1.0
 #
 # Any v0.x.y tag, and any tag with a pre-release suffix (v1.2.0-rc.1), is published as a GitHub
 # pre-release.
@@ -31,6 +33,8 @@ on:
       - "v*.*.*"
       - "cryptoprovider/aesgcm256/v*.*.*"
       - "keywrapping/nativev1/v*.*.*"
+      - "keywrapping/awskms/v*.*.*"
+      - "securefile/v*.*.*"
 
 # Least privilege by default; each job asks for exactly what it needs below.
 permissions:

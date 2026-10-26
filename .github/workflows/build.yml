@@ -4,9 +4,11 @@
 #
 # Runs scripts/check.sh - the same script a developer runs - on each supported OS: formatting,
 # tidy module files, vet, build, every module's tests under the race detector, govulncheck, and a
-# type-check of the native key-wrapper module for every platform. The native round trips are
-# reported as skipped on GitHub's runners, which have no HkdfGuard native library installed; a
-# self-hosted runner with a provisioned test service runs them too.
+# type-check of the native key-wrapper and securefile modules for every platform. The native round
+# trips are reported as skipped on GitHub's runners, which have no HkdfGuard native library
+# installed; a self-hosted runner with a provisioned test service runs them too. The real-KMS round
+# trips (keywrapping/awskms) are reported as skipped too: this workflow sets no
+# HKDFGUARD_TEST_AWS_KMS_KEY_ID and holds no AWS credentials.
 #
 # Holds no secrets and needs no write permission.
 name: Build
@@ -44,8 +46,10 @@ jobs:
           check-latest: false
           cache-dependency-path: |
             go.sum
+            securefile/go.sum
             cryptoprovider/aesgcm256/go.sum
             keywrapping/nativev1/go.sum
+            keywrapping/awskms/go.sum
             integration/go.sum
 
       - name: Check every module

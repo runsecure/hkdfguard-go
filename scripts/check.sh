@@ -2,8 +2,8 @@
 #
 # Every check CI runs, in one place, so a developer runs exactly what a pull request will:
 # formatting, tidy module files, vet, build, the tests under the race detector, and govulncheck,
-# for each module - then type-checks the native key-wrapper module for every platform it supports,
-# whatever this host is. Stops at the first failure.
+# for each module - then type-checks the native key-wrapper and securefile modules for every
+# platform they support, whatever this host is. Stops at the first failure.
 #
 # Usage (from the repository root, or anywhere):
 #   scripts/check.sh                       # every module
@@ -14,9 +14,13 @@
 #                          detector need it); left alone on Windows.
 #   HKDFGUARD_CHECK_RACE   0 skips the race detector (no C toolchain on this host).
 #   HKDFGUARD_TEST_SERVICE a provisioned native service: the native round trips then run too.
+#   HKDFGUARD_TEST_AWS_KMS_KEY_ID  a symmetric AWS KMS key: keywrapping/awskms's real-KMS
+#                          integration tests then run too (credentials and region from the AWS
+#                          SDK's default chain); see docs/how-to/run-aws-kms-integration-tests.md.
 #
 # The native round trips (keywrapping/nativev1, integration) are reported as skipped unless this
-# host has a provisioned test service; see keywrapping/nativev1/scripts.
+# host has a provisioned test service; see keywrapping/nativev1/scripts. The real-KMS round trips
+# (keywrapping/awskms) are reported as skipped unless HKDFGUARD_TEST_AWS_KMS_KEY_ID is set.
 
 set -euo pipefail
 
@@ -25,7 +29,7 @@ cd "$(dirname "$0")/.."
 # Pinned, so a CI run is reproducible; the Go module proxy and checksum database verify it.
 readonly GOVULNCHECK_VERSION="v1.9.0"
 
-readonly ALL_MODULES=(. cryptoprovider/aesgcm256 keywrapping/nativev1 integration)
+readonly ALL_MODULES=(. securefile cryptoprovider/aesgcm256 keywrapping/nativev1 keywrapping/awskms integration)
 modules=("$@")
 [[ ${#modules[@]} -gt 0 ]] || modules=("${ALL_MODULES[@]}")
 
@@ -76,6 +80,17 @@ note "keywrapping/nativev1: type-checks for every supported platform"
     GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go vet ./...
     GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go vet ./...
     GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 go vet ./...
+)
+
+note "securefile: type-checks for every supported platform"
+(
+    cd securefile
+    GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go vet ./...
+    GOOS=windows GOARCH=arm64 CGO_ENABLED=0 go vet ./...
+    GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go vet ./...
+    GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go vet ./...
+    GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 go vet ./...
+    GOOS=freebsd GOARCH=amd64 CGO_ENABLED=0 go vet ./...  # unsupported: refused at run time, must still build
 )
 
 note "all checks passed"
