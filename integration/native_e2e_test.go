@@ -79,6 +79,18 @@ func mustBuildRing(t *testing.T, service string, o ringOptions) *dek.KeyRing {
 // file. It returns the key file's path and the configuration values.
 func runPipeline(t *testing.T, service string, secrets map[string]string) (string, map[string]string) {
 	t.Helper()
+	wrapper, err := nativev1.New(service)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return runPipelineWith(t, wrapper, "wrapped-dek-v3.bin", secrets)
+}
+
+// runPipelineWith protects secrets under a fresh in-memory key, wraps that key through wrapper, and
+// writes the wrapped result to fileName in a key file directory. It returns the key file's path and
+// the configuration values.
+func runPipelineWith(t *testing.T, wrapper hkdfguard.KeyWrapper, fileName string, secrets map[string]string) (string, map[string]string) {
+	t.Helper()
 	pipeline, err := aesgcm256.NewPipelineDataProtector(dek.NewDefaultFormatProvider(), keyFileVersion)
 	if err != nil {
 		t.Fatal(err)
@@ -97,18 +109,13 @@ func runPipeline(t *testing.T, service string, secrets map[string]string) (strin
 	if n, err := base64.StdEncoding.Decode(dekBytes, pipeline.KeyBase64()); err != nil || n != aesgcm256.KeySize {
 		t.Fatalf("decoding the pipeline key: %d, %v", n, err)
 	}
-
-	wrapper, err := nativev1.New(service)
-	if err != nil {
-		t.Fatal(err)
-	}
 	wrapped := make([]byte, hkdfguard.MaxWrappedKeyBytes)
 	n, err := wrapper.Wrap(ctx, dekBytes, wrapped)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	path := filepath.Join(keyFileDirectory(t), "wrapped-dek-v3.bin")
+	path := filepath.Join(keyFileDirectory(t), fileName)
 	if err := os.WriteFile(path, wrapped[:n], 0o600); err != nil {
 		t.Fatal(err)
 	}

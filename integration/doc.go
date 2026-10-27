@@ -4,12 +4,14 @@
 // NativeEndToEndTests.
 //
 // It is a module of its own so the published modules never depend on each other: it requires all
-// three (the root module, cryptoprovider/aesgcm256 and keywrapping/nativev1) through replace
-// directives, is never tagged or published, and contains only tests. Run them from this directory:
+// of them (the root module, cryptoprovider/aesgcm256, keywrapping/nativev1, keywrapping/awskms and
+// securefile) through replace directives, is never tagged or published, and contains only tests.
+// Run them from this directory:
 //
 //	CGO_ENABLED=1 go test ./...   (cgo on macOS and Linux; Windows needs neither)
 //
-// Like keywrapping/nativev1's own native tests, they run against a provisioned test service (see
-// HKDFGUARD_TEST_SERVICE and the provisioning scripts under keywrapping/nativev1/scripts) and are
-// reported as skipped where there is none.
+// Like keywrapping/nativev1's own native tests, the native ones run against a provisioned test
+// service (see HKDFGUARD_TEST_SERVICE and the provisioning scripts under
+// keywrapping/nativev1/scripts) and are reported as skipped where there is none. The AWS KMS ones
+// (awskms_e2e_test.go) use an in-process stand-in for KMS and run everywhere.
 package integration
