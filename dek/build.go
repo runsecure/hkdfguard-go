@@ -67,6 +67,13 @@ type Config struct {
 	// still available, MinKeyRefreshInterval to MaxKeyRefreshInterval. Required. Together with
 	// RefreshFailurePolicy it sets how quickly a revoked KEK stops a running process: about
 	// MaxFailures × KeyRefreshInterval.
+	//
+	// It is also each refresh's deadline: a reveal that takes longer than one interval counts as
+	// a failed refresh, so a hung key wrapper can't keep a revoked KEK's key in use. A short
+	// interval is therefore a short deadline. A TPM-backed KEK can take more than a second to
+	// answer, longer while other processes share the TPM, and a locked macOS keychain stalls the
+	// call; under the default fail-closed policy, MaxFailures slow answers in a row suspend the key
+	// though the KEK is healthy. Keep it at 10 seconds or more for TPM-backed keys.
 	KeyRefreshInterval time.Duration
 
 	// RefreshFailurePolicy is handed to every provider. The zero value fails closed after

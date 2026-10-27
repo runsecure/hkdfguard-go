@@ -94,7 +94,9 @@ func withRefreshTimeout(d time.Duration) Option { return func(o *options) { o.re
 // New creates a Provider: it reveals the DEK in wrapped through wrapper (honoring ctx) and starts
 // the background refresh. The provider owns wrapped from here on and zeroes it when it's closed.
 //
-// expiry is the refresh interval, MinExpiry to MaxExpiry. Bad arguments are reported before the
+// expiry is the refresh interval, MinExpiry to MaxExpiry, and also each refresh's deadline: a
+// reveal slower than one interval counts as a failed refresh under policy, so choose an expiry
+// the key wrapper reliably answers within (10 seconds or more for a TPM). Bad arguments are reported before the
 // key wrapper is called. A wrapper that reveals anything but a KeySize-byte key is refused rather
 // than used.
 func New(ctx context.Context, wrapper hkdfguard.KeyWrapper, wrapped []byte, expiry time.Duration, policy hkdfguard.RefreshFailurePolicy, opts ...Option) (*Provider, error) {
@@ -128,7 +130,11 @@ func New(ctx context.Context, wrapper hkdfguard.KeyWrapper, wrapped []byte, expi
 		refreshTimeout = o.refreshTimeout
 	}
 
-	loopCtx, cancel := context.WithCancel(context.Background())
+	// Not derived from ctx, deliberately: ctx bounds only the first reveal above, while the refresh
+	// loop runs until Close. Deriving it from ctx would stop refreshing when the caller's context
+	// ends, and even context.WithoutCancel(ctx) would parent every later refresh span under the
+	// caller's trace.
+	loopCtx, cancel := context.WithCancel(context.Background()) // NOSONAR godre:S8239 - see above
 	p := &Provider{
 		refreshTimeout: refreshTimeout,
 		wrapper:        wrapper,

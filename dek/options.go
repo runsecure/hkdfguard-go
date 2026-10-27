@@ -26,7 +26,8 @@ type Options struct {
 	// ServiceName identifies this ring's KEK to the native KMS library. Required.
 	ServiceName string `json:"ServiceName"`
 
-	// KeyRefreshInterval is how often, in seconds (1-300), each key is re-revealed through the KEK.
+	// KeyRefreshInterval is how often, in seconds (1-300), each key is re-revealed through the KEK,
+	// and each reveal's deadline (see Config.KeyRefreshInterval: 10 or more for TPM-backed keys).
 	// Unset here, it must be set on the Config before Build.
 	KeyRefreshInterval *int `json:"KeyRefreshInterval,omitempty"`
 

@@ -23,9 +23,16 @@ import (
 //     name must pass the same path checks, and none may be relative, empty (the working directory)
 //     or use $ORIGIN-style substitutions - in both the environment the process started with
 //     (/proc/self/environ, what the dynamic linker read) and the current one.
-//  4. What was loaded. After dlopen, dladdr must place the library's export in the verified file,
+//  4. What would be loaded. Before dlopen, the process's own dynamic linker is asked, in list mode
+//     (ld.so --list, the mechanism ldd uses), where it would find every object the library pulls
+//     in, under the LD_LIBRARY_PATH and LD_PRELOAD the process started with. List mode resolves
+//     exactly as dlopen would - RUNPATH, ld.so.cache and all - but runs none of the libraries'
+//     code, so every path it reports must pass the path checks before any of it can run here. A
+//     name it can't find refuses the load.
+//  5. What was loaded. After dlopen, dladdr must place the library's export in the verified file,
 //     and every object in its dependency closure (each file's DT_NEEDED entries) must be bound to a
-//     file that passes the path checks.
+//     file that passes the path checks. This catches what list mode can't see: a dependency name
+//     the process had already bound to some other object before the library was loaded.
 //
 // The library is not content-pinned: a release's authenticity is verified with Sigstore/cosign when
 // the package is installed, so path integrity is what the loader enforces.
@@ -305,6 +312,66 @@ func linuxVerifyVariableLocation(variable, value, entry string, expected fileTyp
 
 func linuxUntrustedVariable(variable, value, what string) error {
 	return untrusted("%s ('%s') contains %s; the dynamic linker could load the HkdfGuard native library's dependencies from there. Refusing to load it.", variable, value, what)
+}
+
+// linuxListingEnvironment is the whole environment the dynamic linker's list mode runs with: the
+// LD_LIBRARY_PATH and LD_PRELOAD the process started with (initialEnvironment, /proc/self/environ's
+// block) - what dlopen itself uses, since the linker reads them once at startup - and nothing
+// else. LD_AUDIT is left out: an audit module is code the list run would execute, and its
+// locations were already checked before this runs.
+func linuxListingEnvironment(initialEnvironment []byte) []string {
+	var environment []string
+	for _, entry := range bytes.Split(initialEnvironment, []byte{0}) {
+		name, _, ok := strings.Cut(string(entry), "=")
+		if ok && (name == envLibraryPath || name == envPreload) {
+			environment = append(environment, string(entry))
+		}
+	}
+	return environment
+}
+
+// linuxParseListing returns every file path in the output of the dynamic linker's list mode, in
+// order. Its lines are "\tname => /path (0xaddress)", "\t/path (0xaddress)" (the linker itself and
+// preloaded objects) and "\tname (0xaddress)" (the vDSO, which has no file). A name it couldn't
+// find ("=> not found"), or any line in another form, refuses: what can't be read can't be checked.
+func linuxParseListing(library, output string) ([]string, error) {
+	var paths []string
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if name, ok := strings.CutSuffix(line, " => not found"); ok {
+			return nil, untrusted("The dynamic linker can't find '%s', which '%s' needs; refusing to load it.", name, library)
+		}
+		open := strings.LastIndex(line, " (0x")
+		if open < 0 || !strings.HasSuffix(line, ")") {
+			return nil, untrusted("The dynamic linker's list of what '%s' would load has a line this loader doesn't understand ('%s'); refusing to load it.", library, line)
+		}
+		entry := line[:open]
+		if _, path, ok := strings.Cut(entry, " => "); ok {
+			entry = path
+		}
+		if !strings.HasPrefix(entry, "/") {
+			if strings.Contains(entry, "/") || strings.Contains(entry, " ") {
+				return nil, untrusted("The dynamic linker would load '%s' for '%s', which is not an absolute path; refusing to load it.", entry, library)
+			}
+			continue // the vDSO: in the kernel, not a file
+		}
+		paths = append(paths, entry)
+	}
+	return paths, nil
+}
+
+// linuxVerifyListing requires every path the dynamic linker's list mode reported to pass the path
+// checks (resolveTrusted, as linuxTrustedFile).
+func linuxVerifyListing(library string, paths []string, resolveTrusted func(string) (string, error)) error {
+	for _, path := range paths {
+		if _, err := resolveTrusted(path); err != nil {
+			return untrustedCause(err, "Loading '%s' would also load '%s', which is not trusted; nothing was loaded", library, path)
+		}
+	}
+	return nil
 }
 
 // linuxVerifyLoadedImage requires that the file the dynamic linker reports having loaded (resolved;

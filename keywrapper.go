@@ -3,7 +3,7 @@ package hkdfguard
 import "context"
 
 // MaxWrappedKeyBytes is the largest wrapped DEK, in bytes, this library will read from a key file
-// or let a key wrapper generate. Today's native payloads are far smaller (156 bytes on macOS); the
+// or let a key wrapper generate. Today's native payloads are far smaller (125 bytes on macOS); the
 // headroom allows larger keys for other symmetric algorithms and additional fingerprinting. Raise
 // this one value to allow bigger payloads: key-file checks and the buffer CryptoProviderFactory
 // implementations generate into both follow it.

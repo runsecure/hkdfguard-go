@@ -531,3 +531,52 @@ func TestLinuxADependencyThatCannotBeExamined_IsRefused(t *testing.T) {
 		t.Errorf("error %v does not wrap the cause", err)
 	}
 }
+
+func TestLinuxParseListing_ReturnsEveryFile_SkippingTheVDSO(t *testing.T) {
+	output := "\tlinux-vdso.so.1 (0x00007ffd2a5f2000)\n" +
+		"\tlibtss2-esys.so.0 => /lib/x86_64-linux-gnu/libtss2-esys.so.0 (0x00007f1c2a000000)\n" +
+		"\t/usr/lib/libpreloaded.so (0x00007f1c29e00000)\n" +
+		"\tlibc.so.6 => /lib/x86_64-linux-gnu/libc.so.6 (0x00007f1c29c00000)\n" +
+		"\t/lib64/ld-linux-x86-64.so.2 (0x00007f1c2a200000)\n"
+	paths, err := linuxParseListing("lib", output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"/lib/x86_64-linux-gnu/libtss2-esys.so.0", "/usr/lib/libpreloaded.so", "/lib/x86_64-linux-gnu/libc.so.6", "/lib64/ld-linux-x86-64.so.2"}
+	if !slices.Equal(paths, want) {
+		t.Errorf("paths = %v, want %v", paths, want)
+	}
+}
+
+func TestLinuxParseListing_ANameItCannotFind_OrALineItCannotRead_IsRefused(t *testing.T) {
+	requireUntrusted(t, firstError(linuxParseListing("lib", "\tlibmissing.so.1 => not found\n")), "can't find 'libmissing.so.1'")
+	requireUntrusted(t, firstError(linuxParseListing("lib", "\tstatically linked\n")), "doesn't understand")
+	requireUntrusted(t, firstError(linuxParseListing("lib", "\tlibx.so => relative/libx.so (0x1000)\n")), "not an absolute path")
+}
+
+func TestLinuxListingEnvironment_IsOnlyTheStartupLibraryPathAndPreload(t *testing.T) {
+	initial := []byte("HOME=/root\x00LD_LIBRARY_PATH=/opt/lib\x00LD_AUDIT=/opt/audit.so\x00PATH=/usr/bin\x00LD_PRELOAD=/opt/pre.so\x00")
+	got := linuxListingEnvironment(initial)
+	want := []string{"LD_LIBRARY_PATH=/opt/lib", "LD_PRELOAD=/opt/pre.so"}
+	if !slices.Equal(got, want) {
+		t.Errorf("environment = %v, want %v", got, want)
+	}
+	if got := linuxListingEnvironment(nil); len(got) != 0 {
+		t.Errorf("environment from nothing = %v, want empty", got)
+	}
+}
+
+func TestLinuxVerifyListing_RefusesTheFirstUntrustedPath(t *testing.T) {
+	trusted := func(path string) (string, error) {
+		if strings.HasPrefix(path, "/tmp/") {
+			return "", untrusted("'%s' is writable by others.", path)
+		}
+		return path, nil
+	}
+	if err := linuxVerifyListing("lib", []string{"/lib/libc.so.6", "/lib64/ld-linux-x86-64.so.2"}, trusted); err != nil {
+		t.Fatal(err)
+	}
+	requireUntrusted(t, linuxVerifyListing("lib", []string{"/lib/libc.so.6", "/tmp/libtss2-esys.so.0"}, trusted), "/tmp/libtss2-esys.so.0", "nothing was loaded")
+}
+
+func firstError(_ []string, err error) error { return err }

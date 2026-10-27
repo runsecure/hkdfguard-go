@@ -4,11 +4,13 @@ HkdfGuard KeyWrapping and Secrets Protection Library for GoLang
 The Go port of the HkdfGuard .NET libraries: application code works against a `KeyRing` to
 encrypt and decrypt byte payloads under AES-256-GCM data encryption keys (DEKs) that only ever
 exist on disk wrapped under a platform-held key-encryption key (KEK): a TPM2 key on Linux, a
-Secure Enclave key on macOS, a Platform Crypto Provider key on Windows. Values, key files, purposes
-and names are byte-identical between the ports, so one deployment serves both.
+Secure Enclave key on macOS, a Platform Crypto Provider key on Windows - or a symmetric AWS KMS
+key. Values, key files, purposes and names are byte-identical between the ports, so one deployment
+serves both.
 
-**Documentation:** [docs/](docs/README.md) - a [getting-started tutorial](docs/getting-started.md)
-and the [`hkdfguard` tool reference](docs/reference/cli.md).
+**Documentation:** [docs/](docs/README.md) - a [getting-started tutorial](docs/getting-started.md),
+the [`hkdfguard` tool reference](docs/reference/cli.md), and how to
+[wrap keys with AWS KMS](docs/how-to/use-aws-kms.md).
 
 ## Packages
 
@@ -138,10 +140,15 @@ deploying a new key file at a higher version regularly.
 Go port of `HkdfGuard.KeyWrapping.V1`: a `hkdfguard.KeyWrapper` over the OS's native HkdfGuard KMS
 library (TPM2 on Linux, Secure Enclave on macOS, Platform Crypto Provider on Windows). The library
 is loaded only from its fixed install location, after verifying path ownership and permissions,
-the code signature (Authenticode / Developer ID), and the dynamic linker's environment. On macOS
+the code signature (Authenticode / Developer ID), and the dynamic linker's environment; after
+loading, the file the OS actually mapped must be the verified one on every platform. On macOS
 the per-user location is found from the account database, never `$HOME`, and the library must be
 at least version 0.9.0 (its `LC_ID_DYLIB` current version, covered by the signature), so an older
-signed release can't be planted in its place. The Linux
+signed release can't be planted in its place. On Windows the same 0.9.0 floor applies to
+`HkdfGuard.dll`'s signed version resource, and a DLL with none is refused. On Linux, before
+loading, the process's own dynamic linker is asked in list mode (`ld.so --list`, what `ldd` uses)
+where it would find every library `libhkdfguard.so.1` pulls in; each must pass the same ownership
+checks, so a dependency found somewhere writable is refused before any of its code runs. The Linux
 library is not content-pinned; verify a release with Sigstore/cosign (`gh attestation verify`)
 before installing it.
 
@@ -226,18 +233,76 @@ It is its own module (`github.com/runsecure/hkdfguard-go/keywrapping/nativev1`) 
 Linux builds need cgo (`CGO_ENABLED=1` and a C toolchain); Windows needs neither. See
 [Testing](#testing) for its native integration tests.
 
+### `keywrapping/awskms` (separate module)
+
+Go port of `HkdfGuard.KeyWrapping.AwsKms`: a `hkdfguard.KeyWrapper` over one symmetric AWS KMS key,
+through the AWS SDK for Go v2. DEKs are wrapped with `Encrypt`, revealed with `Decrypt` (the key and
+`SYMMETRIC_DEFAULT` pinned, so a key file wrapped under any other key is refused) and generated with
+`GenerateDataKeyWithoutPlaintext`, so on that path the plaintext DEK never leaves KMS. An optional
+encryption context is bound into every wrapped DEK. Wrapped DEKs are byte-compatible with the .NET,
+Java, Python and Node wrappers under the same key and context.
+
+```go
+cfg, err := config.LoadDefaultConfig(ctx) // the application's: credentials, region, retries
+wrapper, err := awskms.New(kms.NewFromConfig(cfg), keyARN,
+	awskms.Options{EncryptionContext: map[string]string{"purpose": "com.example.myapp"}})
+```
+
+A wrapped DEK out of range (empty, or over `hkdfguard.MaxWrappedKeyBytes`) is refused before KMS is
+called; the wrapper's copy of a key sent to `Encrypt`, and the SDK's decoded `Decrypt` plaintext,
+are zeroed once used, and a failed unwrap zeroes the caller's buffer. Every KMS failure is an
+`*awskms.Error` (`errors.Is(err, awskms.ErrKMS)`) naming the operation, the key, KMS's error code
+and the HTTP status, unwrapping to the SDK's error. The SDK is reached through the small
+`awskms.Client` interface, which `*kms.Client` satisfies, so tests can use a fake.
+
+Key files are read with `securefile` (below), refusing one another account could have written or
+replaced: anyone who may call `kms:Encrypt` could otherwise choose the DEK new data is encrypted
+under. `Options.KeyFileTrust` names who besides administrators may write them.
+
+It is its own module so that only applications that use it depend on the AWS SDK. See
+[Wrap keys with AWS KMS](docs/how-to/use-aws-kms.md), and
+[Run the AWS KMS integration tests](docs/how-to/run-aws-kms-integration-tests.md) for its real-KMS
+tests, which skip unless `HKDFGUARD_TEST_AWS_KMS_KEY_ID` names a key.
+
+### `securefile` (separate module)
+
+Go port of `HkdfGuard.SecureFile`: `securefile.ReadTrustedKeyFile` reads a wrapped-key file only
+from where no untrusted account could have written or replaced it - the native library's
+`hkdfguard_open_file` checks, made in Go - for a key wrapper with no native library to read
+through, such as `keywrapping/awskms`.
+
+- **Windows:** the file must be on a local fixed drive, reached through real folders (no symbolic
+  link, junction, mount point or substituted drive; 8.3 short names are expanded first), and it
+  and every folder above it must be owned by, and modifiable only by, SYSTEM, Administrators,
+  TrustedInstaller or a trusted principal. Owner and DACL are read with `golang.org/x/sys/windows`
+  (no cgo); the file's own through the handle it is read from, opened with read sharing only.
+- **Linux and Apple silicon macOS:** it and every directory above it must be owned by root or a
+  trusted user and writable by nobody else (by its group only if that group is trusted); only
+  symbolic links a trusted user owns are followed, and the resolved path is opened with
+  `O_NOFOLLOW` and must still be a regular file.
+- **Everywhere:** 1 to `hkdfguard.MaxWrappedKeyBytes` bytes, and not what looks like an unwrapped
+  key (32 raw bytes, or its hex or base64).
+
+`securefile.KeyFileTrust` names who besides administrators is trusted (Windows SIDs, Unix uids and
+gids); its zero value, `securefile.AdministratorsOnly()`, trusts no one else. A refusal is a
+`*securefile.KeyFileError`, matchable with `errors.Is` against `fs.ErrNotExist`, `fs.ErrPermission`
+(`securefile.ErrUntrusted` for a location that isn't trusted), `hkdfguard.ErrInvalidKeyFile` or
+`securefile.ErrBusy`. It is its own module, like `keywrapping/nativev1`, because it depends on
+`golang.org/x/sys` and holds platform-specific code; it does not load the native library.
+
 ### `integration` (test-only module)
 
 The end-to-end tests that cross module boundaries - a pipeline encrypting configuration, the
 native KEK wrapping its key, an application reading it back - the port of the .NET
-`NativeEndToEndTests`. It is a module of its own so the published modules never depend on each
-other; it is never tagged.
+`NativeEndToEndTests`, and the same paths through `keywrapping/awskms` against an in-process
+stand-in for KMS. It is a module of its own so the published modules never depend on each other;
+it is never tagged.
 
 ## Testing
 
 Every package has tests beside it. `scripts/check.sh` runs what CI runs - formatting, tidy module
 files, vet, build, every module's tests under the race detector, govulncheck, and a type-check of
-`keywrapping/nativev1` for every platform - from any host:
+`keywrapping/nativev1` and `securefile` for every platform - from any host:
 
 ```sh
 scripts/check.sh                       # every module
@@ -308,15 +373,19 @@ The **CI** workflow (`.github/workflows/ci.yml`) runs on every push to `main` or
 pull request, and on demand. It calls the reusable `build.yml`, which runs `scripts/check.sh` on
 Ubuntu, macOS (Apple silicon) and Windows. GitHub's runners have no HkdfGuard native library, so
 the native round trips are reported as skipped there; a self-hosted runner with a provisioned test
-service runs them too. No secrets, no write permissions.
+service runs them too. The real-KMS tests in `keywrapping/awskms` are skipped there as well: CI
+sets no `HKDFGUARD_TEST_AWS_KMS_KEY_ID` and holds no AWS credentials. No secrets, no write
+permissions.
 
 A Go module is released by its tag alone: the Go module proxy serves the tagged source, so there
-is nothing to pack, sign or push to a feed. The three published modules are tagged separately:
+is nothing to pack, sign or push to a feed. The five published modules are tagged separately:
 
 ```sh
 git tag v0.1.0 && git push origin v0.1.0                                             # the root module
+git tag securefile/v0.1.0 && git push origin securefile/v0.1.0
 git tag cryptoprovider/aesgcm256/v0.1.0 && git push origin cryptoprovider/aesgcm256/v0.1.0
 git tag keywrapping/nativev1/v0.1.0 && git push origin keywrapping/nativev1/v0.1.0
+git tag keywrapping/awskms/v0.1.0 && git push origin keywrapping/awskms/v0.1.0       # after securefile
 ```
 
 The **Release** workflow (`release.yml`) then:
@@ -335,4 +404,6 @@ Unlike the .NET port there is no Azure sign-in and no `release` environment: Go 
 source, with nothing to Authenticode-sign. Third-party actions are pinned to full commit SHAs.
 
 Until the root module has a tagged release, `keywrapping/nativev1/go.mod`,
-`cryptoprovider/aesgcm256/go.mod` and `integration/go.mod` point at it with `replace` directives.
+`cryptoprovider/aesgcm256/go.mod`, `securefile/go.mod`, `keywrapping/awskms/go.mod` and
+`integration/go.mod` point at it with `replace` directives; `keywrapping/awskms` and `integration`
+point at `securefile` the same way until it is tagged.

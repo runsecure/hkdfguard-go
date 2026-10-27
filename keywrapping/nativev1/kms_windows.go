@@ -41,6 +41,10 @@ func winLoad(path, expectedPublisher string) (kmsLibrary, error) {
 	if err := winVerifyImageKindOf(path); err != nil {
 		return nil, err
 	}
+	version, ok := winReadFileVersion(path)
+	if err := winRequireMinimumVersion(path, version, ok); err != nil {
+		return nil, err
+	}
 	if err := winVerifyNotRevoked(path); err != nil {
 		return nil, err
 	}
@@ -50,6 +54,10 @@ func winLoad(path, expectedPublisher string) (kmsLibrary, error) {
 	handle, err := windows.LoadLibraryEx(path, 0, windows.LOAD_LIBRARY_SEARCH_SYSTEM32)
 	if err != nil {
 		return nil, untrustedCause(err, "'%s' passed verification but could not be loaded", path)
+	}
+	if err := winVerifyModuleIsFile(handle, path); err != nil {
+		_ = windows.FreeLibrary(handle)
+		return nil, err
 	}
 
 	library := &winLibrary{handle: handle}
@@ -71,6 +79,42 @@ func winLoad(path, expectedPublisher string) (kmsLibrary, error) {
 		*export.target = address
 	}
 	return library, nil
+}
+
+// winReadFileVersion reads the file version (major, minor, patch) from path's version resource,
+// through version.dll from System32; ok is false if the file has none or it can't be read.
+func winReadFileVersion(path string) (version [3]uint16, ok bool) {
+	size, err := windows.GetFileVersionInfoSize(path, nil)
+	if err != nil || size == 0 {
+		return version, false
+	}
+	block := make([]byte, size)
+	if err := windows.GetFileVersionInfo(path, 0, size, unsafe.Pointer(&block[0])); err != nil {
+		return version, false
+	}
+	var info *windows.VS_FIXEDFILEINFO
+	var length uint32
+	if err := windows.VerQueryValue(unsafe.Pointer(&block[0]), `\`, unsafe.Pointer(&info), &length); err != nil ||
+		info == nil || length < uint32(unsafe.Sizeof(*info)) || info.Signature != 0xFEEF04BD {
+		return version, false
+	}
+	version = [3]uint16{uint16(info.FileVersionMS >> 16), uint16(info.FileVersionMS), uint16(info.FileVersionLS >> 16)}
+	runtime.KeepAlive(block)
+	return version, true
+}
+
+// winVerifyModuleIsFile reads the file Windows mapped handle from and requires it to be path (see
+// winVerifyLoadedModule).
+func winVerifyModuleIsFile(handle windows.Handle, path string) error {
+	buffer := make([]uint16, windows.MAX_LONG_PATH)
+	n, err := windows.GetModuleFileName(handle, &buffer[0], uint32(len(buffer)))
+	if err != nil {
+		return untrustedCause(err, "Could not read which file Windows loaded for '%s'", path)
+	}
+	if n == 0 || n >= uint32(len(buffer)) {
+		return untrusted("Could not read which file Windows loaded for '%s'.", path)
+	}
+	return winVerifyLoadedModule(path, windows.UTF16ToString(buffer[:n]))
 }
 
 // winVerifyLocation checks the file and each parent folder below the drive root: not a reparse

@@ -22,8 +22,13 @@ import (
 //     WinVerifyTrust validated it - ends at the pinned root winExpectedRootSHA256.
 //  5. Its PE header - covered by that signature - marks it a DLL for this process's architecture,
 //     which refuses the profile's other binaries (hkdfguard.exe renamed into place).
+//  6. Its version resource - also covered by that signature - is at least
+//     winMinimumLibraryVersion, so an older genuine release can't be put back in its place.
 //
-// The library's own dependencies are then resolved from System32 only.
+// The library's own dependencies are then resolved from System32 only. After loading, the module
+// Windows actually mapped must be the file that was verified (winVerifyLoadedModule): a module of
+// the same name already in the process, or loader redirection, would otherwise hand back another
+// image under the verified path's name.
 
 const (
 	winFileName = "HkdfGuard.dll"
@@ -172,6 +177,47 @@ func winRevocationDecision(path string, status uint32) error {
 		return untrusted("'%s' is signed with a certificate that has been revoked; refusing to load it. Install a current release.", path)
 	}
 	return nil
+}
+
+// winMinimumLibraryVersion is the oldest Windows native library release this package loads
+// (major, minor, patch): 0.9.0, the first to carry a version resource. A release that fixes a
+// security issue raises it, so a genuinely signed older release is refused rather than loaded.
+var winMinimumLibraryVersion = [3]uint16{0, 9, 0}
+
+// winRequireMinimumVersion refuses a library whose file version - major, minor and patch from its
+// signed version resource; ok is false when it has none or it can't be read - is below
+// winMinimumLibraryVersion. The fourth (revision) field is not compared. Run after the signature
+// check, whose hash covers the resource.
+func winRequireMinimumVersion(path string, version [3]uint16, ok bool) error {
+	minimum := winMinimumLibraryVersion
+	if !ok {
+		return untrusted("'%s' carries no readable version resource, so it predates %d.%d.%d, the oldest HkdfGuard native library this package accepts; install a current release.",
+			path, minimum[0], minimum[1], minimum[2])
+	}
+	if slices.Compare(version[:], minimum[:]) < 0 {
+		return untrusted("'%s' is HkdfGuard native library version %d.%d.%d, older than the minimum this package accepts (%d.%d.%d); install a current release.",
+			path, version[0], version[1], version[2], minimum[0], minimum[1], minimum[2])
+	}
+	return nil
+}
+
+// winVerifyLoadedModule requires the file Windows mapped the loaded module from (GetModuleFileName)
+// to be the verified path. LoadLibraryEx returns an already-loaded module of the same name, and
+// honours loader redirection (.local, manifests), without mapping the path it was given; this is
+// the Windows counterpart of the dladdr check on Linux and macOS. The comparison is
+// case-insensitive, as NTFS names are, and ignores a \\?\ prefix.
+func winVerifyLoadedModule(verified, loaded string) error {
+	if !strings.EqualFold(winStripLongPathPrefix(loaded), winStripLongPathPrefix(verified)) {
+		return untrusted("'%s' passed verification, but Windows loaded '%s' instead (a module of the same name was already loaded, or the load was redirected); refusing to use it.", verified, loaded)
+	}
+	return nil
+}
+
+func winStripLongPathPrefix(path string) string {
+	if rest, ok := strings.CutPrefix(path, `\\?\UNC\`); ok {
+		return `\\` + rest
+	}
+	return strings.TrimPrefix(path, `\\?\`)
 }
 
 // PE header values.

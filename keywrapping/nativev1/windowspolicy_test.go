@@ -217,3 +217,43 @@ func TestWinRevocationDecision_RefusesOnlyADefiniteRevocation(t *testing.T) {
 		}
 	}
 }
+
+func TestWinTheVerifiedFileItself_IsAccepted_WhateverItsCaseOrLongPathPrefix(t *testing.T) {
+	verified := `C:\Program Files\HkdfGuard\v1\HkdfGuard.dll`
+	for _, loaded := range []string{
+		verified,
+		`c:\program files\hkdfguard\v1\hkdfguard.DLL`,
+		`\\?\C:\Program Files\HkdfGuard\v1\HkdfGuard.dll`,
+	} {
+		if err := winVerifyLoadedModule(verified, loaded); err != nil {
+			t.Errorf("%s: %v", loaded, err)
+		}
+	}
+}
+
+func TestWinAModuleMappedFromAnyOtherFile_IsRefused(t *testing.T) {
+	verified := `C:\Program Files\HkdfGuard\v1\HkdfGuard.dll`
+	for _, loaded := range []string{
+		`C:\Users\someone\AppData\Local\Temp\HkdfGuard.dll`, // the same name, loaded earlier from elsewhere
+		`C:\app\app.exe.local\HkdfGuard.dll`,                // DLL redirection
+		`C:\Program Files\HkdfGuard\v2\HkdfGuard.dll`,
+		`\\?\UNC\server\share\HkdfGuard.dll`,
+	} {
+		requireUntrusted(t, winVerifyLoadedModule(verified, loaded), verified, loaded, "loaded")
+	}
+}
+
+func TestWinTheMinimumVersionOrLater_IsAccepted_WhateverTheRevision(t *testing.T) {
+	for _, version := range [][3]uint16{{0, 9, 0}, {0, 9, 1}, {0, 10, 0}, {1, 0, 0}} {
+		if err := winRequireMinimumVersion("test", version, true); err != nil {
+			t.Errorf("%v: %v", version, err)
+		}
+	}
+}
+
+func TestWinAnOlderVersion_OrNoVersionResource_IsRefused(t *testing.T) {
+	for _, version := range [][3]uint16{{0, 8, 9}, {0, 0, 0}, {0, 8, 65535}} {
+		requireUntrusted(t, winRequireMinimumVersion("test", version, true), "older than the minimum", "0.9.0")
+	}
+	requireUntrusted(t, winRequireMinimumVersion("test", [3]uint16{}, false), "no readable version resource", "0.9.0")
+}
