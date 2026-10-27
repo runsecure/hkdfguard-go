@@ -25,6 +25,10 @@ profile.cov
 go.work
 go.work.sum
 
+# Local integration-test settings (azure.test.properties): they name test keys, never a credential,
+# but stay on the developer's machine.
+*.test.properties
+
 # env file
 .env
 
