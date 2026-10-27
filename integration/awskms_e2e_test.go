@@ -5,11 +5,9 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
-	"encoding/base64"
 	"errors"
 	"maps"
 	"os"
-	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -147,46 +145,10 @@ func TestAwsKms_LetsACryptoProviderGenerateAndRevealItsDEKThroughKMS(t *testing.
 	}
 }
 
-// runKMSPipeline does what a release pipeline does with KMS: protects configuration under a fresh
-// in-memory key, wraps that key through KMS, and writes the wrapped result as the release's key
-// file. It returns the key file's path and the configuration values.
-func runKMSPipeline(t *testing.T, wrapper *awskms.KeyWrapper, secrets map[string]string) (string, map[string]string) {
-	t.Helper()
-	pipeline, err := aesgcm256.NewPipelineDataProtector(dek.NewDefaultFormatProvider(), keyFileVersion)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer pipeline.Close()
-
-	values := make(map[string]string, len(secrets))
-	for key, secret := range secrets {
-		if values[key], err = pipeline.Encrypt(ctx, []byte(secret), key); err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	dekBytes := make([]byte, aesgcm256.KeySize)
-	defer hkdfguard.Wipe(dekBytes)
-	if n, err := base64.StdEncoding.Decode(dekBytes, pipeline.KeyBase64()); err != nil || n != aesgcm256.KeySize {
-		t.Fatalf("decoding the pipeline key: %d, %v", n, err)
-	}
-	wrapped := make([]byte, hkdfguard.MaxWrappedKeyBytes)
-	n, err := wrapper.Wrap(ctx, dekBytes, wrapped)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	path := filepath.Join(keyFileDirectory(t), "v3.key")
-	if err := os.WriteFile(path, wrapped[:n], 0o600); err != nil {
-		t.Fatal(err)
-	}
-	return path, values
-}
-
 func TestAwsKms_PipelineEncryptedConfiguration_DecryptsThroughItsKMSWrappedKeyFile(t *testing.T) {
 	local := newLocalKMS(t)
 	wrapper := kmsWrapper(t, local, trustThisAccount(t))
-	keyFile, values := runKMSPipeline(t, wrapper, map[string]string{"ConnectionStrings:Admin": "Server=db;Password=hunter2"})
+	keyFile, values := runPipelineWith(t, wrapper, "v3.key", map[string]string{"ConnectionStrings:Admin": "Server=db;Password=hunter2"})
 
 	ring, err := buildKMSRing(t, dek.Config{KeyWrapper: wrapper, KeyFiles: map[int]string{keyFileVersion: keyFile}})
 	if err != nil {
@@ -199,7 +161,7 @@ func TestAwsKms_PipelineEncryptedConfiguration_DecryptsThroughItsKMSWrappedKeyFi
 
 func TestAwsKms_ARingRefusesToBuild_FromAKeyFileNoOneTrustedWrote(t *testing.T) {
 	local := newLocalKMS(t)
-	keyFile, _ := runKMSPipeline(t, kmsWrapper(t, local, trustThisAccount(t)), map[string]string{"Secret": "value"})
+	keyFile, _ := runPipelineWith(t, kmsWrapper(t, local, trustThisAccount(t)), "v3.key", map[string]string{"Secret": "value"})
 	if os.Geteuid() == 0 {
 		t.Skip("Running as root, whose files are trusted.")
 	}
@@ -213,7 +175,7 @@ func TestAwsKms_ARingRefusesToBuild_FromAKeyFileNoOneTrustedWrote(t *testing.T) 
 
 func TestAwsKms_ARingRefusesToBuild_FromAKeyFileUnderAnotherEncryptionContext(t *testing.T) {
 	local := newLocalKMS(t)
-	keyFile, _ := runKMSPipeline(t, kmsWrapper(t, local, trustThisAccount(t)), map[string]string{"Secret": "value"})
+	keyFile, _ := runPipelineWith(t, kmsWrapper(t, local, trustThisAccount(t)), "v3.key", map[string]string{"Secret": "value"})
 
 	other, err := awskms.New(local, kmsKeyARN, awskms.Options{EncryptionContext: map[string]string{"purpose": "another app"}, KeyFileTrust: trustThisAccount(t)})
 	if err != nil {
