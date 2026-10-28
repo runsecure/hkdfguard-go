@@ -5,12 +5,14 @@ The Go port of the HkdfGuard .NET libraries: application code works against a `K
 encrypt and decrypt byte payloads under AES-256-GCM data encryption keys (DEKs) that only ever
 exist on disk wrapped under a platform-held key-encryption key (KEK): a TPM2 key on Linux, a
 Secure Enclave key on macOS, a Platform Crypto Provider key on Windows - or a symmetric AWS KMS
-key. Values, key files, purposes and names are byte-identical between the ports, so one deployment
-serves both.
+key, a pair of Azure Key Vault keys, or a symmetric Google Cloud KMS key. Values, key files,
+purposes and names are byte-identical between the ports, so one deployment serves both.
 
 **Documentation:** [docs/](docs/README.md) - a [getting-started tutorial](docs/getting-started.md),
 the [`hkdfguard` tool reference](docs/reference/cli.md), and how to
-[wrap keys with AWS KMS](docs/how-to/use-aws-kms.md).
+[wrap keys with AWS KMS](docs/how-to/use-aws-kms.md),
+[with Azure Key Vault](docs/how-to/use-azure-key-vault.md) or
+[with Google Cloud KMS](docs/how-to/use-google-kms.md).
 
 ## Packages
 
@@ -264,12 +266,79 @@ It is its own module so that only applications that use it depend on the AWS SDK
 [Run the AWS KMS integration tests](docs/how-to/run-aws-kms-integration-tests.md) for its real-KMS
 tests, which skip unless `HKDFGUARD_TEST_AWS_KMS_KEY_ID` names a key.
 
+### `keywrapping/azurekeyvault` (separate module)
+
+Go port of `HkdfGuard.KeyWrapping.AzureKeyVault`: a `hkdfguard.KeyWrapper` over two Azure Key Vault
+keys, through the Azure SDK for Go (`azkeys`). DEKs are wrapped and unwrapped under an RSA key
+(RSA-OAEP-256), and every wrapped DEK is signed by a separate EC P-256 key (ES256) and verified
+before it is unwrapped: RSA wrapping needs only the public key, so without the signature anyone
+could make a key file holding a DEK of their choosing. A wrapped DEK records the two key versions
+it was made with - the vault and key names always come from `New` - so both keys can be rotated in
+Key Vault with no change here. An optional context is bound into the signature. Wrapped DEKs are
+byte-compatible with the .NET, Java, Python and Node wrappers under the same keys and context.
+
+```go
+credential, err := azidentity.NewDefaultAzureCredential(nil) // a managed identity, deployed
+wrapper, err := azurekeyvault.New(
+	"https://myvault.vault.azure.net/keys/myapp-wrap",
+	"https://myvault.vault.azure.net/keys/myapp-sign",
+	credential, azurekeyvault.Options{Context: "com.example.myapp"})
+```
+
+Every operation is a Key Vault call; none reads a key, so no identity needs `get`. Key Vault has no
+"generate data key", so `GenerateAndWrap` generates the DEK in the process. The wrapper's copy of a
+key it wraps, and the SDK's decoded `unwrapKey` result, are zeroed once used, and a failed unwrap
+zeroes the caller's buffer. Every Key Vault failure is an `*azurekeyvault.Error`
+(`errors.Is(err, azurekeyvault.ErrKeyVault)`) naming the operation, the key, Key Vault's error code
+and the HTTP status, unwrapping to the SDK's error. `Options.ClientOptions` configures the Key Vault
+clients the wrapper creates - its transport too, so tests can answer in-process.
+
+Key files are read with `securefile`, as for AWS KMS. It is its own module so that only
+applications that use it depend on the Azure SDK. See
+[Wrap keys with Azure Key Vault](docs/how-to/use-azure-key-vault.md), and
+[Run the Azure Key Vault integration tests](docs/how-to/run-azure-key-vault-integration-tests.md)
+for its real-Key Vault tests, which skip unless both keys are named.
+
+### `keywrapping/googlekms` (separate module)
+
+Go port of `HkdfGuard.KeyWrapping.GoogleKms`: a `hkdfguard.KeyWrapper` over one symmetric Google
+Cloud KMS key (purpose `ENCRYPT_DECRYPT`), through `cloud.google.com/go/kms`. DEKs are wrapped with
+`Encrypt` and revealed with `Decrypt`, the key pinned, so a key file wrapped under any other key is
+refused. A ciphertext names the key version that made it, so Cloud KMS's key rotation needs no
+change here. Every wrapped DEK is bound, as additional authenticated data, to a fixed HkdfGuard
+label and an optional context, and every request and response carries a CRC32C checksum, so data
+corrupted in transit is refused. Wrapped DEKs are byte-compatible with the .NET, Java, Python and
+Node wrappers under the same key and context.
+
+```go
+client, err := kms.NewKeyManagementClient(ctx) // the application's: credentials, transport, retries
+wrapper, err := googlekms.New(client,
+	"projects/my-project/locations/us-east1/keyRings/myapp/cryptoKeys/myapp-wrap",
+	googlekms.Options{Context: "com.example.myapp"})
+```
+
+Cloud KMS has no "generate data key", so `GenerateAndWrap` generates the DEK in the process. A
+wrapped DEK out of range is refused before Cloud KMS is called; the wrapper's copy of a key it
+wraps, and the client's decoded `Decrypt` plaintext, are zeroed once used, and a failed unwrap
+zeroes the caller's buffer. Every Cloud KMS failure is a `*googlekms.Error`
+(`errors.Is(err, googlekms.ErrCloudKMS)`) naming the operation, the key, and for a refusal the gRPC
+status and Google's description, unwrapping to the client's error. The client is reached through
+the small `googlekms.Client` interface, which `*kms.KeyManagementClient` satisfies over gRPC or
+REST, so tests can use a fake; the wrapper never creates or closes one.
+
+Key files are read with `securefile`, as for AWS KMS: anyone allowed
+`cloudkms.cryptoKeyVersions.useToEncrypt` could otherwise choose the DEK new data is encrypted
+under. It is its own module so that only applications that use it depend on the Google Cloud
+client libraries. See [Wrap keys with Google Cloud KMS](docs/how-to/use-google-kms.md), and
+[Run the Google Cloud KMS integration tests](docs/how-to/run-google-kms-integration-tests.md) for
+its real-Cloud KMS tests, which skip unless the key is named.
+
 ### `securefile` (separate module)
 
 Go port of `HkdfGuard.SecureFile`: `securefile.ReadTrustedKeyFile` reads a wrapped-key file only
 from where no untrusted account could have written or replaced it - the native library's
 `hkdfguard_open_file` checks, made in Go - for a key wrapper with no native library to read
-through, such as `keywrapping/awskms`.
+through, such as `keywrapping/awskms`, `keywrapping/azurekeyvault` and `keywrapping/googlekms`.
 
 - **Windows:** the file must be on a local fixed drive, reached through real folders (no symbolic
   link, junction, mount point or substituted drive; 8.3 short names are expanded first), and it
@@ -294,9 +363,9 @@ gids); its zero value, `securefile.AdministratorsOnly()`, trusts no one else. A 
 
 The end-to-end tests that cross module boundaries - a pipeline encrypting configuration, the
 native KEK wrapping its key, an application reading it back - the port of the .NET
-`NativeEndToEndTests`, and the same paths through `keywrapping/awskms` against an in-process
-stand-in for KMS. It is a module of its own so the published modules never depend on each other;
-it is never tagged.
+`NativeEndToEndTests`, and the same paths through `keywrapping/awskms`, `keywrapping/azurekeyvault`
+and `keywrapping/googlekms` against in-process stand-ins for AWS KMS, Key Vault and Cloud KMS. It is
+a module of its own so the published modules never depend on each other; it is never tagged.
 
 ## Testing
 
@@ -373,12 +442,13 @@ The **CI** workflow (`.github/workflows/ci.yml`) runs on every push to `main` or
 pull request, and on demand. It calls the reusable `build.yml`, which runs `scripts/check.sh` on
 Ubuntu, macOS (Apple silicon) and Windows. GitHub's runners have no HkdfGuard native library, so
 the native round trips are reported as skipped there; a self-hosted runner with a provisioned test
-service runs them too. The real-KMS tests in `keywrapping/awskms` are skipped there as well: CI
-sets no `HKDFGUARD_TEST_AWS_KMS_KEY_ID` and holds no AWS credentials. No secrets, no write
-permissions.
+service runs them too. The real-KMS tests in `keywrapping/awskms`, the real-Key Vault tests in
+`keywrapping/azurekeyvault` and the real-Cloud KMS tests in `keywrapping/googlekms` are skipped
+there as well: CI names no test keys and holds no AWS, Azure or Google credentials. No secrets, no
+write permissions.
 
 A Go module is released by its tag alone: the Go module proxy serves the tagged source, so there
-is nothing to pack, sign or push to a feed. The five published modules are tagged separately:
+is nothing to pack, sign or push to a feed. The seven published modules are tagged separately:
 
 ```sh
 git tag v0.1.0 && git push origin v0.1.0                                             # the root module
@@ -386,6 +456,8 @@ git tag securefile/v0.1.0 && git push origin securefile/v0.1.0
 git tag cryptoprovider/aesgcm256/v0.1.0 && git push origin cryptoprovider/aesgcm256/v0.1.0
 git tag keywrapping/nativev1/v0.1.0 && git push origin keywrapping/nativev1/v0.1.0
 git tag keywrapping/awskms/v0.1.0 && git push origin keywrapping/awskms/v0.1.0       # after securefile
+git tag keywrapping/azurekeyvault/v0.1.0 && git push origin keywrapping/azurekeyvault/v0.1.0  # after securefile
+git tag keywrapping/googlekms/v0.1.0 && git push origin keywrapping/googlekms/v0.1.0  # after securefile
 ```
 
 The **Release** workflow (`release.yml`) then:
@@ -404,6 +476,7 @@ Unlike the .NET port there is no Azure sign-in and no `release` environment: Go 
 source, with nothing to Authenticode-sign. Third-party actions are pinned to full commit SHAs.
 
 Until the root module has a tagged release, `keywrapping/nativev1/go.mod`,
-`cryptoprovider/aesgcm256/go.mod`, `securefile/go.mod`, `keywrapping/awskms/go.mod` and
-`integration/go.mod` point at it with `replace` directives; `keywrapping/awskms` and `integration`
-point at `securefile` the same way until it is tagged.
+`cryptoprovider/aesgcm256/go.mod`, `securefile/go.mod`, `keywrapping/awskms/go.mod`,
+`keywrapping/azurekeyvault/go.mod`, `keywrapping/googlekms/go.mod` and `integration/go.mod` point
+at it with `replace` directives; `keywrapping/awskms`, `keywrapping/azurekeyvault`,
+`keywrapping/googlekms` and `integration` point at `securefile` the same way until it is tagged.
