@@ -19,6 +19,7 @@
 #   git tag keywrapping/nativev1/v0.1.0 && git push origin keywrapping/nativev1/v0.1.0
 #   git tag keywrapping/awskms/v0.1.0 && git push origin keywrapping/awskms/v0.1.0
 #   git tag keywrapping/azurekeyvault/v0.1.0 && git push origin keywrapping/azurekeyvault/v0.1.0
+#   git tag keywrapping/googlekms/v0.1.0 && git push origin keywrapping/googlekms/v0.1.0
 #   git tag securefile/v0.1.0 && git push origin securefile/v0.1.0
 #
 # Any v0.x.y tag, and any tag with a pre-release suffix (v1.2.0-rc.1), is published as a GitHub
@@ -36,6 +37,7 @@ on:
       - "keywrapping/nativev1/v*.*.*"
       - "keywrapping/awskms/v*.*.*"
       - "keywrapping/azurekeyvault/v*.*.*"
+      - "keywrapping/googlekms/v*.*.*"
       - "securefile/v*.*.*"
 
 # Least privilege by default; each job asks for exactly what it needs below.

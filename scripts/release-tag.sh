@@ -4,7 +4,8 @@
 # key=value lines (what the release workflow writes to $GITHUB_OUTPUT):
 #
 #   module_dir    the module's directory: ".", securefile, cryptoprovider/aesgcm256,
-#                 keywrapping/nativev1, keywrapping/awskms or keywrapping/azurekeyvault
+#                 keywrapping/nativev1, keywrapping/awskms, keywrapping/azurekeyvault or
+#                 keywrapping/googlekms
 #   module_path   its module path
 #   artifact      the name of its source archive: hkdfguard-go, hkdfguard-go-aesgcm256, ...
 #   version       the tag's version, with the v
@@ -17,13 +18,14 @@
 #   keywrapping/nativev1/vMAJOR.MINOR.PATCH[-suffix]     that nested module
 #   keywrapping/awskms/vMAJOR.MINOR.PATCH[-suffix]       that nested module
 #   keywrapping/azurekeyvault/vMAJOR.MINOR.PATCH[-suffix] that nested module
+#   keywrapping/googlekms/vMAJOR.MINOR.PATCH[-suffix]    that nested module
 #   securefile/vMAJOR.MINOR.PATCH[-suffix]               that nested module
 #
 # A nested module is refused while its go.mod still points at the root module (or, for
-# keywrapping/awskms and keywrapping/azurekeyvault, at securefile) with a replace directive, or
-# requires a placeholder version of it: a consumer would get a module that doesn't build. Remove the
-# replace and require a tagged version first - so the root module, then securefile, before
-# keywrapping/awskms and keywrapping/azurekeyvault.
+# keywrapping/awskms, keywrapping/azurekeyvault and keywrapping/googlekms, at securefile) with a
+# replace directive, or requires a placeholder version of it: a consumer would get a module that
+# doesn't build. Remove the replace and require a tagged version first - so the root module, then
+# securefile, before keywrapping/awskms, keywrapping/azurekeyvault and keywrapping/googlekms.
 #
 # Usage: scripts/release-tag.sh <tag>
 
@@ -39,11 +41,11 @@ readonly SEMVER='v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z]+(\.[0-9A-Za-z]+)*)?'
 if [[ ${tag} =~ ^${SEMVER}$ ]]; then
     module_dir="."
     artifact="hkdfguard-go"
-elif [[ ${tag} =~ ^(securefile|cryptoprovider/aesgcm256|keywrapping/nativev1|keywrapping/awskms|keywrapping/azurekeyvault)/${SEMVER}$ ]]; then
+elif [[ ${tag} =~ ^(securefile|cryptoprovider/aesgcm256|keywrapping/nativev1|keywrapping/awskms|keywrapping/azurekeyvault|keywrapping/googlekms)/${SEMVER}$ ]]; then
     module_dir="${BASH_REMATCH[1]}"
     artifact="hkdfguard-go-$(basename "${module_dir}")"
 else
-    die "tag '${tag}' is not vMAJOR.MINOR.PATCH (optionally -suffix), on its own or under securefile/, cryptoprovider/aesgcm256/, keywrapping/nativev1/, keywrapping/awskms/ or keywrapping/azurekeyvault/"
+    die "tag '${tag}' is not vMAJOR.MINOR.PATCH (optionally -suffix), on its own or under securefile/, cryptoprovider/aesgcm256/, keywrapping/nativev1/, keywrapping/awskms/, keywrapping/azurekeyvault/ or keywrapping/googlekms/"
 fi
 version="${tag##*/}"
 
