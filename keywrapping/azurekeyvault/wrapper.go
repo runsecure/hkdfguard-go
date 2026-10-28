@@ -3,7 +3,6 @@ package azurekeyvault
 import (
 	"bytes"
 	"context"
-	"crypto/rand"
 	"crypto/sha256"
 	"errors"
 	"strings"
@@ -13,6 +12,7 @@ import (
 	"github.com/Azure/azure-sdk-for-go/sdk/security/keyvault/azkeys"
 
 	"github.com/runsecure/hkdfguard-go"
+	"github.com/runsecure/hkdfguard-go/internal/kmswrap"
 	"github.com/runsecure/hkdfguard-go/securefile"
 )
 
@@ -21,6 +21,9 @@ const GeneratedKeyLength = 32
 
 // MaxPlaintextLength is the largest plaintext RSA-OAEP-256 wraps under a 2048-bit key, in bytes.
 const MaxPlaintextLength = 190
+
+// service is Key Vault's limits, for the steps every cloud key wrapper takes alike.
+var service = kmswrap.Service{Name: "Azure Key Vault", MaxPlaintextLength: MaxPlaintextLength, InvalidArgument: invalidArgument}
 
 // Options are a KeyWrapper's optional settings; the zero value binds no context, trusts only
 // administrators to have written key files, and gives the Key Vault clients the SDK's defaults.
@@ -177,19 +180,7 @@ func (w *KeyWrapper) SigningKeyID() string { return w.signingKeyID }
 // not be reached, answered for a key other than the one asked, or the wrapped DEK would be over
 // hkdfguard.MaxWrappedKeyBytes (an RSA key over 3072 bits) or its signature isn't ES256's.
 func (w *KeyWrapper) Wrap(ctx context.Context, plaintext, result []byte) (int, error) {
-	if err := ctx.Err(); err != nil {
-		return 0, err
-	}
-	if len(plaintext) == 0 || len(plaintext) > MaxPlaintextLength {
-		return 0, invalidArgument("Azure Key Vault wraps 1-%d bytes; got %d.", MaxPlaintextLength, len(plaintext))
-	}
-
-	// A copy this wrapper owns, so it can be zeroed whatever the caller does with theirs meanwhile.
-	// The SDK serializes the request inside the call, so it has been sent - or failed - once the
-	// call returns.
-	buffer := bytes.Clone(plaintext)
-	defer hkdfguard.Wipe(buffer)
-	return w.wrapOwned(ctx, buffer, result)
+	return service.Wrap(ctx, plaintext, result, w.wrapOwned)
 }
 
 // Unwrap verifies the wrapped DEK's signature under the signing key version it records, and only
@@ -199,16 +190,11 @@ func (w *KeyWrapper) Wrap(ctx context.Context, plaintext, result []byte) (int, e
 // It fails with an *Error when wrapped isn't a wrapped DEK this wrapper wrote, its signature doesn't
 // verify (forged, tampered with, or under a different context), Key Vault refused it, could not be
 // reached or returned no key; with ErrInvalidArgument when result is too small for the revealed key.
-func (w *KeyWrapper) Unwrap(ctx context.Context, wrapped, result []byte) (n int, err error) {
-	defer func() {
-		if err != nil {
-			// Whatever a failed call left in the DEK buffer is erased.
-			hkdfguard.Wipe(result)
-		}
-	}()
-	if err := ctx.Err(); err != nil {
-		return 0, err
-	}
+func (w *KeyWrapper) Unwrap(ctx context.Context, wrapped, result []byte) (int, error) {
+	return kmswrap.Unwrap(ctx, wrapped, result, w.unwrap)
+}
+
+func (w *KeyWrapper) unwrap(ctx context.Context, wrapped, result []byte) (int, error) {
 	// A copy, so what is verified is what is unwrapped, whatever the caller does with theirs meanwhile.
 	envelope := bytes.Clone(wrapped)
 	p, err := parse(envelope, w.fail("unwrap", w.wrappingKey))
@@ -247,10 +233,7 @@ func (w *KeyWrapper) Unwrap(ctx context.Context, wrapped, result []byte) (n int,
 	if len(revealed) == 0 {
 		return 0, keyVaultError("unwrap", wrappedBy, nil, "Azure Key Vault unwrap for key '%s' returned no key.", w.wrappingKey.name)
 	}
-	if len(revealed) > len(result) {
-		return 0, invalidArgument("The revealed key is %d bytes; result holds %d.", len(revealed), len(result))
-	}
-	return copy(result, revealed), nil
+	return service.Reveal(revealed, result)
 }
 
 // GenerateAndWrap generates a fresh GeneratedKeyLength-byte DEK in this process, and wraps and signs
@@ -259,13 +242,7 @@ func (w *KeyWrapper) Unwrap(ctx context.Context, wrapped, result []byte) (n int,
 //
 // It fails as Wrap does.
 func (w *KeyWrapper) GenerateAndWrap(ctx context.Context, result []byte) (int, error) {
-	if err := ctx.Err(); err != nil {
-		return 0, err
-	}
-	dek := make([]byte, GeneratedKeyLength)
-	defer hkdfguard.Wipe(dek)
-	_, _ = rand.Read(dek) // never fails; it crashes the program first
-	return w.wrapOwned(ctx, dek, result)
+	return kmswrap.GenerateAndWrap(ctx, GeneratedKeyLength, result, w.wrapOwned)
 }
 
 // ReadKeyFile reads a key file this wrapper wrote, still wrapped, refusing one that an account

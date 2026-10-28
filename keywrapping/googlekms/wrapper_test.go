@@ -17,6 +17,7 @@ import (
 	"google.golang.org/protobuf/types/known/wrapperspb"
 
 	"github.com/runsecure/hkdfguard-go"
+	"github.com/runsecure/hkdfguard-go/internal/kmstest"
 )
 
 // aad is the AAD a wrapper binds for context.
@@ -674,26 +675,7 @@ func TestFailures_AClientThatReturnsNoResponse(t *testing.T) {
 
 func TestFailures_AnEndedContextMakesNoCall(t *testing.T) {
 	fake := newFakeKMS(t)
-	wrapper := newWrapper(t, fake.client(t))
-	ctx, cancel := context.WithCancel(t.Context())
-	cancel()
-	result := filled(hkdfguard.MaxWrappedKeyBytes)
-
-	if _, err := wrapper.Wrap(ctx, random(32), result); !errors.Is(err, context.Canceled) {
-		t.Errorf("wrap: %v", err)
-	}
-	if _, err := wrapper.GenerateAndWrap(ctx, result); !errors.Is(err, context.Canceled) {
-		t.Errorf("generate-and-wrap: %v", err)
-	}
-	if _, err := wrapper.ReadKeyFile(ctx, "v1.key"); !errors.Is(err, context.Canceled) {
-		t.Errorf("read key file: %v", err)
-	}
-	if _, err := wrapper.Unwrap(ctx, random(61), result); !errors.Is(err, context.Canceled) {
-		t.Errorf("unwrap: %v", err)
-	}
-	if !hkdfguard.IsZero(result) {
-		t.Error("unwrap did not zero the result")
-	}
+	kmstest.RequireEndedContextRefused(t, newWrapper(t, fake.client(t)), random(61))
 	if fake.calls() != 0 {
 		t.Error("Cloud KMS was called")
 	}

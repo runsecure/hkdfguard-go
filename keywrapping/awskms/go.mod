@@ -2,7 +2,7 @@ module github.com/runsecure/hkdfguard-go/keywrapping/awskms
 
 go 1.27.1
 
-toolchain go1.27.2
+toolchain go1.27.3
 
 require (
 	github.com/aws/aws-sdk-go-v2 v1.47.3

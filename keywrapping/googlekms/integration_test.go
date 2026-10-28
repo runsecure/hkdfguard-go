@@ -1,17 +1,14 @@
 package googlekms
 
 import (
-	"bufio"
 	"bytes"
-	"errors"
 	"os"
-	"path/filepath"
-	"strings"
 	"testing"
 
 	kms "cloud.google.com/go/kms/apiv1"
 
 	"github.com/runsecure/hkdfguard-go"
+	"github.com/runsecure/hkdfguard-go/internal/kmstest"
 )
 
 // Real calls against a symmetric Cloud KMS key the caller provides, named in google.test.properties
@@ -41,27 +38,7 @@ const (
 // ever goes in it.
 func settings(t *testing.T) map[string]string {
 	t.Helper()
-	values := map[string]string{}
-	file, err := os.Open(filepath.Join("..", "..", settingsFile))
-	if errors.Is(err, os.ErrNotExist) {
-		return values
-	}
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer file.Close()
-	scanner := bufio.NewScanner(file)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		name, value, found := strings.Cut(line, "=")
-		if line != "" && !strings.HasPrefix(line, "#") && !strings.HasPrefix(line, "!") && found && strings.TrimSpace(name) != "" {
-			values[strings.TrimSpace(name)] = strings.TrimSpace(value)
-		}
-	}
-	if err := scanner.Err(); err != nil {
-		t.Fatal(err)
-	}
-	return values
+	return kmstest.Settings(t, settingsFile)
 }
 
 // configuredKey is the real key, from the environment, else from the settings file; it skips the

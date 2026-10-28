@@ -12,7 +12,7 @@ It takes about 20 minutes. You need one of:
 
 And, on either:
 
-- Go 1.25 or later. The modules name Go 1.27.2 in their `toolchain` directive, so `go` downloads
+- Go 1.25 or later. The modules name Go 1.27.3 in their `toolchain` directive, so `go` downloads
   it on first use.
 - The HkdfGuard native package for your platform.
 

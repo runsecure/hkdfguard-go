@@ -2,7 +2,7 @@ module github.com/runsecure/hkdfguard-go/keywrapping/googlekms
 
 go 1.27.1
 
-toolchain go1.27.2
+toolchain go1.27.3
 
 replace (
 	github.com/runsecure/hkdfguard-go => ../..
@@ -15,7 +15,7 @@ require (
 	github.com/googleapis/gax-go/v2 v2.23.0
 	github.com/runsecure/hkdfguard-go v0.0.0-00010101000000-000000000000
 	github.com/runsecure/hkdfguard-go/securefile v0.0.0-00010101000000-000000000000
-	golang.org/x/sys v0.48.0
+	golang.org/x/sys v0.49.0
 	google.golang.org/api v0.287.1
 	google.golang.org/grpc v1.83.2
 	google.golang.org/protobuf v1.36.11
@@ -39,11 +39,11 @@ require (
 	go.opentelemetry.io/otel v1.46.0 // indirect
 	go.opentelemetry.io/otel/metric v1.46.0 // indirect
 	go.opentelemetry.io/otel/trace v1.46.0 // indirect
-	golang.org/x/crypto v0.57.0 // indirect
-	golang.org/x/net v0.60.0 // indirect
+	golang.org/x/crypto v0.58.0 // indirect
+	golang.org/x/net v0.62.0 // indirect
 	golang.org/x/oauth2 v0.36.0 // indirect
-	golang.org/x/sync v0.23.0 // indirect
-	golang.org/x/text v0.42.0 // indirect
+	golang.org/x/sync v0.24.0 // indirect
+	golang.org/x/text v0.43.0 // indirect
 	golang.org/x/time v0.15.0 // indirect
 	google.golang.org/genproto v0.0.0-20260319201613-d00831a3d3e7 // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20260630182238-925bb5da69e7 // indirect

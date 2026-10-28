@@ -19,6 +19,7 @@ import (
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore/policy"
 
 	"github.com/runsecure/hkdfguard-go"
+	"github.com/runsecure/hkdfguard-go/internal/kmstest"
 )
 
 // envelopeVersions are the wrapping and signing key versions a wrapped DEK records.
@@ -670,25 +671,7 @@ func TestFailures_AnEndedContextMakesNoCall(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithCancel(t.Context())
-	cancel()
-	result := filled(hkdfguard.MaxWrappedKeyBytes)
-
-	if _, err := wrapper.Wrap(ctx, random(32), result); !errors.Is(err, context.Canceled) {
-		t.Errorf("wrap: %v", err)
-	}
-	if _, err := wrapper.GenerateAndWrap(ctx, result); !errors.Is(err, context.Canceled) {
-		t.Errorf("generate-and-wrap: %v", err)
-	}
-	if _, err := wrapper.ReadKeyFile(ctx, "v1.key"); !errors.Is(err, context.Canceled) {
-		t.Errorf("read key file: %v", err)
-	}
-	if _, err := wrapper.Unwrap(ctx, random(359), result); !errors.Is(err, context.Canceled) {
-		t.Errorf("unwrap: %v", err)
-	}
-	if !hkdfguard.IsZero(result) {
-		t.Error("unwrap did not zero the result")
-	}
+	kmstest.RequireEndedContextRefused(t, wrapper, random(359))
 	if len(vault.challenges) != 0 || len(credential.requests) != 0 {
 		t.Error("Key Vault was called")
 	}

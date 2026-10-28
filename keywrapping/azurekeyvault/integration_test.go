@@ -1,17 +1,14 @@
 package azurekeyvault
 
 import (
-	"bufio"
 	"bytes"
-	"errors"
 	"os"
-	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/Azure/azure-sdk-for-go/sdk/azidentity"
 
 	"github.com/runsecure/hkdfguard-go"
+	"github.com/runsecure/hkdfguard-go/internal/kmstest"
 )
 
 // Real calls against an RSA wrapping key and an EC P-256 signing key the caller provides, named in
@@ -43,27 +40,7 @@ const (
 // in it.
 func settings(t *testing.T) map[string]string {
 	t.Helper()
-	values := map[string]string{}
-	file, err := os.Open(filepath.Join("..", "..", settingsFile))
-	if errors.Is(err, os.ErrNotExist) {
-		return values
-	}
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer file.Close()
-	scanner := bufio.NewScanner(file)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		name, value, found := strings.Cut(line, "=")
-		if line != "" && !strings.HasPrefix(line, "#") && !strings.HasPrefix(line, "!") && found && strings.TrimSpace(name) != "" {
-			values[strings.TrimSpace(name)] = strings.TrimSpace(value)
-		}
-	}
-	if err := scanner.Err(); err != nil {
-		t.Fatal(err)
-	}
-	return values
+	return kmstest.Settings(t, settingsFile)
 }
 
 // configuredKeys is the real wrapping and signing keys, each from the environment, else from the

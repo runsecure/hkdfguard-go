@@ -8,6 +8,7 @@ import (
 
 	"golang.org/x/sys/windows"
 
+	"github.com/runsecure/hkdfguard-go/internal/kmstest"
 	"github.com/runsecure/hkdfguard-go/securefile"
 )
 
@@ -25,14 +26,14 @@ func TestReadKeyFile_ReadsAFileTheWritersAccountIsTrustedFor_AndItReveals_Window
 		EncryptionContext: testContext,
 		KeyFileTrust:      securefile.NewKeyFileTrust(securefile.KeyFileTrustOptions{WindowsPrincipals: []string{currentUserSID(t)}}),
 	})
-	readAndReveal(t, wrapper, userWritableKeyFile(t))
+	kmstest.ReadAndReveal(t, wrapper, kmstest.UserWritableKeyFile(t))
 }
 
 func TestReadKeyFile_RefusesToTrustEveryone_Windows(t *testing.T) {
 	wrapper := newWrapper(t, newFakeKMS(t), Options{
 		KeyFileTrust: securefile.NewKeyFileTrust(securefile.KeyFileTrustOptions{WindowsPrincipals: []string{"S-1-1-0"}}),
 	})
-	if _, err := wrapper.ReadKeyFile(t.Context(), userWritableKeyFile(t)); !errors.Is(err, securefile.ErrInvalidTrust) {
+	if _, err := wrapper.ReadKeyFile(t.Context(), kmstest.UserWritableKeyFile(t)); !errors.Is(err, securefile.ErrInvalidTrust) {
 		t.Fatalf("got %v; want securefile.ErrInvalidTrust", err)
 	}
 }

@@ -3,7 +3,6 @@ package googlekms
 import (
 	"bytes"
 	"context"
-	"crypto/rand"
 	"errors"
 	"hash/crc32"
 	"regexp"
@@ -17,6 +16,7 @@ import (
 	"google.golang.org/protobuf/types/known/wrapperspb"
 
 	"github.com/runsecure/hkdfguard-go"
+	"github.com/runsecure/hkdfguard-go/internal/kmswrap"
 	"github.com/runsecure/hkdfguard-go/securefile"
 )
 
@@ -25,6 +25,9 @@ const GeneratedKeyLength = 32
 
 // MaxPlaintextLength is the largest plaintext Cloud KMS's Encrypt accepts, in bytes.
 const MaxPlaintextLength = 64 * 1024
+
+// service is Cloud KMS's limits, for the steps every cloud key wrapper takes alike.
+var service = kmswrap.Service{Name: "Cloud KMS", MaxPlaintextLength: MaxPlaintextLength, InvalidArgument: invalidArgument}
 
 // MaxContextLength is the longest context, in UTF-8 bytes: what Cloud KMS's additional authenticated
 // data allows, less the HkdfGuard label.
@@ -173,19 +176,7 @@ func (w *KeyWrapper) KeyName() string { return w.keyName }
 // not be reached, the request or response was corrupted in transit, it answered for a key other than
 // this one, or the wrapped DEK is over hkdfguard.MaxWrappedKeyBytes.
 func (w *KeyWrapper) Wrap(ctx context.Context, plaintext, result []byte) (int, error) {
-	if err := ctx.Err(); err != nil {
-		return 0, err
-	}
-	if len(plaintext) == 0 || len(plaintext) > MaxPlaintextLength {
-		return 0, invalidArgument("Cloud KMS wraps 1-%d bytes; got %d.", MaxPlaintextLength, len(plaintext))
-	}
-
-	// A copy this wrapper owns, so it can be zeroed whatever the caller does with theirs meanwhile.
-	// The client serializes the request inside the call, so it has been sent - or failed - once the
-	// call returns.
-	buffer := bytes.Clone(plaintext)
-	defer hkdfguard.Wipe(buffer)
-	return w.wrapOwned(ctx, buffer, result)
+	return service.Wrap(ctx, plaintext, result, w.wrapOwned)
 }
 
 // Unwrap reveals a key with Cloud KMS's Decrypt, the key pinned, writing it into result and returning
@@ -195,16 +186,11 @@ func (w *KeyWrapper) Wrap(ctx context.Context, plaintext, result []byte) (int, e
 // calling Cloud KMS), or Cloud KMS refused it - tampered with, wrapped under another key, or under a
 // different context - or could not be reached, or the response was corrupted in transit; with
 // ErrInvalidArgument when result is too small for the revealed key.
-func (w *KeyWrapper) Unwrap(ctx context.Context, wrapped, result []byte) (n int, err error) {
-	defer func() {
-		if err != nil {
-			// Whatever a failed call left in the DEK buffer is erased.
-			hkdfguard.Wipe(result)
-		}
-	}()
-	if err := ctx.Err(); err != nil {
-		return 0, err
-	}
+func (w *KeyWrapper) Unwrap(ctx context.Context, wrapped, result []byte) (int, error) {
+	return kmswrap.Unwrap(ctx, wrapped, result, w.unwrap)
+}
+
+func (w *KeyWrapper) unwrap(ctx context.Context, wrapped, result []byte) (int, error) {
 	// Refused locally: no ciphertext this wrapper produced is outside these bounds.
 	if len(wrapped) == 0 || len(wrapped) > hkdfguard.MaxWrappedKeyBytes {
 		return 0, w.cloudKMSError("unwrap", nil, "A wrapped DEK is 1-%d bytes; got %d.", hkdfguard.MaxWrappedKeyBytes, len(wrapped))
@@ -235,10 +221,7 @@ func (w *KeyWrapper) Unwrap(ctx context.Context, wrapped, result []byte) (n int,
 		return 0, w.cloudKMSError("unwrap", nil,
 			"Cloud KMS unwrap for key '%s' returned a plaintext that doesn't match its checksum: it was corrupted in transit.", w.keyName)
 	}
-	if len(revealed) > len(result) {
-		return 0, invalidArgument("The revealed key is %d bytes; result holds %d.", len(revealed), len(result))
-	}
-	return copy(result, revealed), nil
+	return service.Reveal(revealed, result)
 }
 
 // GenerateAndWrap generates a fresh GeneratedKeyLength-byte DEK in this process and wraps it as Wrap
@@ -247,13 +230,7 @@ func (w *KeyWrapper) Unwrap(ctx context.Context, wrapped, result []byte) (n int,
 //
 // It fails as Wrap does.
 func (w *KeyWrapper) GenerateAndWrap(ctx context.Context, result []byte) (int, error) {
-	if err := ctx.Err(); err != nil {
-		return 0, err
-	}
-	dek := make([]byte, GeneratedKeyLength)
-	defer hkdfguard.Wipe(dek)
-	_, _ = rand.Read(dek) // never fails; it crashes the program first
-	return w.wrapOwned(ctx, dek, result)
+	return kmswrap.GenerateAndWrap(ctx, GeneratedKeyLength, result, w.wrapOwned)
 }
 
 // ReadKeyFile reads a key file this wrapper wrote, still wrapped, refusing one that an account
