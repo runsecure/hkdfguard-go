@@ -17,10 +17,22 @@
 #   HKDFGUARD_TEST_AWS_KMS_KEY_ID  a symmetric AWS KMS key: keywrapping/awskms's real-KMS
 #                          integration tests then run too (credentials and region from the AWS
 #                          SDK's default chain); see docs/how-to/run-aws-kms-integration-tests.md.
+#   HKDFGUARD_TEST_AZURE_WRAP_KEY_ID, HKDFGUARD_TEST_AZURE_SIGN_KEY_ID  an RSA key and an EC P-256
+#                          key in Azure Key Vault: keywrapping/azurekeyvault's real-Key Vault
+#                          integration tests then run too (DefaultAzureCredential signs in); they
+#                          can also be named in azure.test.properties at the repository root; see
+#                          docs/how-to/run-azure-key-vault-integration-tests.md.
+#   HKDFGUARD_TEST_GOOGLE_KMS_KEY_NAME  a symmetric Google Cloud KMS key's resource name:
+#                          keywrapping/googlekms's real-Cloud KMS integration tests then run too
+#                          (Application Default Credentials sign in); it can also be named in
+#                          google.test.properties at the repository root; see
+#                          docs/how-to/run-google-kms-integration-tests.md.
 #
 # The native round trips (keywrapping/nativev1, integration) are reported as skipped unless this
 # host has a provisioned test service; see keywrapping/nativev1/scripts. The real-KMS round trips
-# (keywrapping/awskms) are reported as skipped unless HKDFGUARD_TEST_AWS_KMS_KEY_ID is set.
+# (keywrapping/awskms) are reported as skipped unless HKDFGUARD_TEST_AWS_KMS_KEY_ID is set, and the
+# real-Key Vault ones (keywrapping/azurekeyvault) unless both Azure key identifiers are named, and
+# the real-Cloud KMS ones (keywrapping/googlekms) unless the Google key is named.
 
 set -euo pipefail
 
@@ -29,7 +41,7 @@ cd "$(dirname "$0")/.."
 # Pinned, so a CI run is reproducible; the Go module proxy and checksum database verify it.
 readonly GOVULNCHECK_VERSION="v1.9.0"
 
-readonly ALL_MODULES=(. securefile cryptoprovider/aesgcm256 keywrapping/nativev1 keywrapping/awskms integration)
+readonly ALL_MODULES=(. securefile cryptoprovider/aesgcm256 keywrapping/nativev1 keywrapping/awskms keywrapping/azurekeyvault keywrapping/googlekms integration)
 modules=("$@")
 [[ ${#modules[@]} -gt 0 ]] || modules=("${ALL_MODULES[@]}")
 
