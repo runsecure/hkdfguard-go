@@ -87,8 +87,15 @@ Go port of `HkdfGuard.Cache` and `ProtectedCacheBase`: values encrypted under a 
 to their names (`hkdfguard.CacheAAD`), matched ignoring ASCII case only.
 
 - `cache.New(ring)` - the read/write `ProtectedCache` (`Add`, `AddOrUpdate`, `Decrypt`).
-- `cache.NewReadOnly(ring, source)` - filled on demand from a `cache.Source`. A Vault or Azure Key
-  Vault backend implements only `Source`; encryption, name binding and telemetry stay here.
+- `cache.NewReadOnly(ring, source)` - filled on demand from a `cache.Source`, one value per name.
+- `cache.NewRemote(ring, store, options)` - the port of `RemoteSecretCache`: a read-only cache over a
+  remote secret store, filled one secret per fetch. A name is a secret's name, optionally followed
+  by `#` and a key (`"app-config#password"`); one fetch caches the whole value and every member of a
+  JSON object it holds, and concurrent misses on the same secret share one fetch. A store
+  implements only `cache.SecretStore` (`IsValidName`, `Fetch`); `cache.CaptureJSONBody` and
+  `cache.CaptureJSONKeys` take a secret out of a JSON response body before an SDK can turn it into
+  a string, so a fetched secret is never a Go string. The stores HkdfGuard ships are the
+  `cache/*` modules below.
 - `cache.NewCollection(a, b, ...)` - several caches behind one lookup, first match wins.
 
 ### `encryptedconfig`
@@ -332,6 +339,55 @@ under. It is its own module so that only applications that use it depend on the 
 client libraries. See [Wrap keys with Google Cloud KMS](docs/how-to/use-google-kms.md), and
 [Run the Google Cloud KMS integration tests](docs/how-to/run-google-kms-integration-tests.md) for
 its real-Cloud KMS tests, which skip unless the key is named.
+
+### `keywrapping/hashicorpvault` (separate module)
+
+Go port of `HkdfGuard.KeyWrapping.HashiCorpVault`: a `hkdfguard.KeyWrapper` over one key in a
+HashiCorp Vault transit secrets engine, through HashiCorp's own Go client,
+`github.com/hashicorp/vault/api`. DEKs are wrapped with `encrypt`, revealed with `decrypt`, and
+generated with `datakey/wrapped` - so without a context the plaintext DEK never leaves Vault. A
+context is bound in as `associated_data`. Wrapped DEKs are Vault's `vault:v<n>:<base64>`
+ciphertext, byte-compatible with the .NET wrapper under the same key and context.
+
+```go
+config := api.DefaultConfig()  // VAULT_ADDR, VAULT_CACERT, VAULT_NAMESPACE, ...
+config.DisableRedirects = true // a redirect would carry the token and the DEK elsewhere
+client, err := api.NewClient(config)
+client.SetToken(token)         // or an auth method with a LifetimeWatcher, or Vault Agent
+wrapper, err := hashicorpvault.New(client, "myapp-kek", hashicorpvault.Options{Context: "com.example.myapp"})
+```
+
+The client is the application's: address, TLS, namespace, token and its renewal, timeout and
+retries are all `api.Config`/`*api.Client` settings, replacing the .NET options and
+`IVaultTokenSource`. `New` refuses a client that would follow redirects (unless
+`Options.AllowRedirects`), or whose address isn't https (http and `unix://` only on the local
+host). Request bodies holding a DEK and Vault's answers are read through buffers the wrapper zeroes;
+the token, held by `*api.Client` as a Go string, can't be zeroed. Key files are read with
+`securefile`. See [Wrap keys with HashiCorp Vault transit](docs/how-to/use-hashicorp-vault-transit.md)
+and [Run the HashiCorp Vault transit integration tests](docs/how-to/run-hashicorp-vault-transit-integration-tests.md).
+
+### Secret caches: `cache/awssecretsmanager`, `cache/azurekeyvault`, `cache/googlesecretmanager`, `cache/hashicorpvault` (separate modules)
+
+Go ports of `HkdfGuard.Cache.AwsSecretsManager`, `.AzureKeyVault`, `.GoogleSecretManager` and
+`.HashiCorpVault`: each `New` returns a `*cache.RemoteCache` over one secret store, reading one
+secret per miss (never listing), encrypting it under the key ring, and serving it from memory after
+that. A secret holding a JSON object is cached whole and by key (`"db-login#password"`); Vault's KV
+secrets, which are sets of keys, read `Options.DefaultKey` (`"value"`) for a name without one.
+
+| Module | `New` | Names | How the secret is kept out of Go strings |
+|---|---|---|---|
+| `cache/awssecretsmanager` | `New(client, ring, options)` - the application's `*secretsmanager.Client` | exact | a per-call middleware below the SDK's deserializer captures `SecretString`/`SecretBinary` from the raw body and hands the SDK a redacted copy; response-body logging is forced off for the call |
+| `cache/azurekeyvault` | `New(vaultURL, credential, ring, options)` - builds its own `azsecrets.Client` from a copy of `Options.ClientOptions` | ignoring ASCII case | a per-retry pipeline policy reads the unbuffered body and hands the SDK a redacted copy; options that log bodies are refused |
+| `cache/googlesecretmanager` | `New(client, projectID, ring, options)` - the application's `*secretmanager.Client` | exact | the payload is `[]byte`, zeroed once encrypted; a per-call gRPC codec zeroes gRPC's pooled receive buffers; CRC32C and the secret's name are checked |
+| `cache/hashicorpvault` | `New(client, ring, options)` - the application's `*api.Client` from `github.com/hashicorp/vault/api` | exact | raw reads (`ReadRawWithContext`) parsed straight into zeroed buffers; https only (http and `unix://` on the local host), and the client must set `DisableRedirects` unless `Options.AllowRedirects` - a read has no body for `keywrapping/hashicorpvault`'s per-request redirect refusal to hook |
+
+Each is its own module so that only applications that use it depend on that SDK. What stays beyond
+reach is below the SDK - TLS and socket buffers - plus, for Vault, the token the client holds. See
+[Cache AWS Secrets Manager secrets](docs/how-to/use-aws-secrets-manager-cache.md),
+[Cache Azure Key Vault secrets](docs/how-to/use-azure-key-vault-secret-cache.md),
+[Cache Google Cloud Secret Manager secrets](docs/how-to/use-google-secret-manager-cache.md) and
+[Cache HashiCorp Vault secrets](docs/how-to/use-hashicorp-vault-secret-cache.md); each covers its
+real-store integration tests, which skip unless a secret is named.
 
 ### `securefile` (separate module)
 

@@ -12,7 +12,12 @@ platform protects (TPM or Secure Enclave), then to a durable key file.
 **Using an AWS KMS key as the KEK** instead of the TPM or Secure Enclave: see
 [Wrap keys with AWS KMS](how-to/use-aws-kms.md). **Using Azure Key Vault keys:** see
 [Wrap keys with Azure Key Vault](how-to/use-azure-key-vault.md). **Using a Google Cloud KMS key:**
-see [Wrap keys with Google Cloud KMS](how-to/use-google-kms.md).
+see [Wrap keys with Google Cloud KMS](how-to/use-google-kms.md). **Using a HashiCorp Vault transit
+key:** see [Wrap keys with HashiCorp Vault transit](how-to/use-hashicorp-vault-transit.md).
+
+**Reading secrets from a secret store** - AWS Secrets Manager, Azure Key Vault, Google Cloud Secret
+Manager or HashiCorp Vault - into an encrypted in-memory cache: see the *Cache ... secrets* pages
+below.
 
 **Porting from the .NET libraries:** the same pages exist in `hkdfguard-dotnet/docs`, with the
 same structure. Everything a value or a key file is made of - the `enc::v<version>::<base64>`
@@ -30,6 +35,12 @@ byte-identical between the ports, so one deployment serves both.
 | How-to | [Run the Azure Key Vault integration tests](how-to/run-azure-key-vault-integration-tests.md) | Draft |
 | How-to | [Wrap keys with Google Cloud KMS](how-to/use-google-kms.md) | Draft |
 | How-to | [Run the Google Cloud KMS integration tests](how-to/run-google-kms-integration-tests.md) | Draft |
+| How-to | [Wrap keys with HashiCorp Vault transit](how-to/use-hashicorp-vault-transit.md) | Draft |
+| How-to | [Run the HashiCorp Vault transit integration tests](how-to/run-hashicorp-vault-transit-integration-tests.md) | Draft |
+| How-to | [Cache AWS Secrets Manager secrets](how-to/use-aws-secrets-manager-cache.md) | Draft |
+| How-to | [Cache Azure Key Vault secrets](how-to/use-azure-key-vault-secret-cache.md) | Draft |
+| How-to | [Cache Google Cloud Secret Manager secrets](how-to/use-google-secret-manager-cache.md) | Draft |
+| How-to | [Cache HashiCorp Vault secrets](how-to/use-hashicorp-vault-secret-cache.md) | Draft |
 | How-to | Provision a service on each platform | Planned (the test-host scripts under `keywrapping/nativev1/scripts` show each platform's steps) |
 | How-to | Create key files in a deployment pipeline | Planned (see [Getting started, step 5](getting-started.md#5-create-a-key-file)) |
 | How-to | Rotate keys | Planned (see the README's `dek` section for now) |
