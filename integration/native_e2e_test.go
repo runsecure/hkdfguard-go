@@ -247,19 +247,20 @@ func TestATamperedKeyFile_RefusesToBuild(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	wrapped[len(wrapped)/2] ^= 0x01
+	// The last byte is part of the AEAD tag, which no platform's library can check without the KEK,
+	// so the file reads back fine and the build fails at unwrap. (A change to the payload's
+	// structure is refused earlier, when the file is read, as a *KeyFileError.)
+	wrapped[len(wrapped)-1] ^= 0x01
 	if err := os.WriteFile(keyFile, wrapped, 0o600); err != nil {
 		t.Fatal(err)
 	}
 
 	_, err = buildRing(t, service, ringOptions{keyFile: keyFile})
 
-	// Refused when the file is read (a changed header field) or when it is unwrapped (anything
-	// else), either way by the native library.
 	var statusErr *nativev1.StatusError
 	var keyFileErr *nativev1.KeyFileError
-	if !errors.As(err, &statusErr) && !errors.As(err, &keyFileErr) {
-		t.Errorf("error = %v, want a native *StatusError or *KeyFileError", err)
+	if !errors.As(err, &statusErr) || errors.As(err, &keyFileErr) {
+		t.Errorf("error = %v, want the native *StatusError of a failed unwrap, not a refused read", err)
 	}
 }
 
