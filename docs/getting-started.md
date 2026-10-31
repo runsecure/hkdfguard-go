@@ -397,6 +397,8 @@ the same on Windows, Linux and macOS.
 | `StatusError` `-18` (macOS) | The keychain would not answer: locked, no UI session for the access prompt, or the prompt was declined | Run from a logged-in session and choose Always Allow |
 | `StatusError` `-16` | The key file was wrapped under a different service's KEK | Use the service name the file was created with |
 | `StatusError` `-10`, `-11` or `-12` | The key file was altered (malformed, failed authentication, or an unknown version) | Restore it from your deployment artifacts |
+| `StatusError` `-13` (Windows) | The key file is the other payload version from the one `HKLM\Software\Policies\HkdfGuard\ClassicalMode` selects (absent or 0: version 2; 1: version 1) | Re-wrap the key file on this host, or set `ClassicalMode` to match the file |
+| `StatusError` `-3` (Windows) | Payload version 2 can't be used on this host (event 2008 names the reason) | Set `ClassicalMode` to 1 to keep using version 1 |
 | `hkdfguard.ErrInvalidServiceName` | The name breaks the rule in step 2 | Use letters, digits and dots only |
 | `KeyFileError` `-32`, `fs.ErrNotExist` | The key file, or a folder in its path, does not exist | Check the path in `KeyFiles` |
 | `KeyFileError` `-33` or `-39`, `fs.ErrPermission` | This account may not read the key file, or the native library doesn't trust its location (a link or junction, a short or network path, or a file or folder another account could replace) | Grant read access; use a real local path in a folder only administrators (and the reading account) can change |
