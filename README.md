@@ -184,7 +184,8 @@ and its meaning, matchable with `errors.Is` against `fs.ErrNotExist`, `fs.ErrPer
 `hkdfguard.ErrInvalidKeyFile`.
 
 Every platform's native library returns the same status codes (the header's `HKDFGUARD_ERR_*`
-table: -17 no KEK, -18 access denied, -10..-12 a malformed, altered or unsupported payload, -16 a
+table: -17 no KEK, -18 access denied, -10..-12 a malformed, altered or unsupported payload, -13 a
+payload version this host's policy doesn't use, -16 a
 payload wrapped under another KEK, -32..-39 key-file refusals, and so on); a `*nativev1.StatusError`
 or `*nativev1.KeyFileError` carries the code and what it means on this platform. The installed
 files are `%ProgramFiles%\HkdfGuard\v1\HkdfGuard.dll` and `hkdfguard.exe` on Windows,
