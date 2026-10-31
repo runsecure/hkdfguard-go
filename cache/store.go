@@ -2,9 +2,15 @@
 // library and the ProtectedCacheBase from HkdfGuard.Abstractions:
 //
 //   - Cache: the read/write hkdfguard.ProtectedCache - values are added by the application.
-//   - ReadOnlyCache: a hkdfguard.ProtectedReadOnlyCache filled on demand from a Source, such as a
-//     secret store (HashiCorp Vault, Azure Key Vault, ...). A backend supplies only the Source;
-//     encryption, name binding and telemetry stay here.
+//   - ReadOnlyCache: a hkdfguard.ProtectedReadOnlyCache filled on demand from a Source, one value
+//     per name. A backend supplies only the Source; encryption, name binding and telemetry stay
+//     here.
+//   - RemoteCache: a hkdfguard.ProtectedReadOnlyCache over a remote secret store, filled one
+//     secret per fetch - its whole value and every key it holds ("name#key") - with concurrent
+//     misses sharing one fetch. A store supplies only a SecretStore; the modules
+//     cache/awssecretsmanager, cache/azurekeyvault, cache/googlesecretmanager and
+//     cache/hashicorpvault are the stores HkdfGuard ships. CaptureJSONBody and CaptureJSONKeys take
+//     a secret out of a JSON response body before an SDK can turn it into a string.
 //   - Collection: several read-only caches behind one lookup, checked in order.
 //
 // Every value is encrypted under its KeyRing's current key when stored, and its entry records that
@@ -46,10 +52,15 @@ func (f SourceFunc) Fetch(ctx context.Context, name string) ([]byte, bool, error
 }
 
 // store is the plumbing every cache here shares: a KeyRing to encrypt and decrypt through, the
-// encrypted entries keyed by name, and an optional Source consulted on a miss.
+// encrypted entries keyed by name, and an optional Source - or populate - consulted on a miss.
 type store struct {
 	ring   hkdfguard.KeyRing
 	source Source
+
+	// populate, when set, is consulted on a miss instead of source: it stores whatever it fetches
+	// itself (a RemoteCache stores several entries per fetch) and reports whether it stored anything,
+	// after which the name is looked up again.
+	populate func(ctx context.Context, name string) (bool, error)
 
 	// Entries keyed by matchKey(name), each a *hkdfguard.KeyTrackingValue that was encrypted for
 	// that same name. Keying by the ASCII-upper-cased name is exactly the rule CacheAAD applies,
@@ -103,6 +114,17 @@ func (s *store) encrypt(ctx context.Context, name string, plaintext []byte) (*hk
 func (s *store) lookup(ctx context.Context, name string) (entry *hkdfguard.KeyTrackingValue, found bool, err error) {
 	key := matchKey(name)
 	if e, ok := s.entries.Load(key); ok {
+		return e.(*hkdfguard.KeyTrackingValue), true, nil
+	}
+	if s.populate != nil {
+		populated, err := s.populate(ctx, name)
+		if err != nil || !populated {
+			return nil, false, err
+		}
+		e, ok := s.entries.Load(key)
+		if !ok {
+			return nil, false, nil
+		}
 		return e.(*hkdfguard.KeyTrackingValue), true, nil
 	}
 	if s.source == nil {

@@ -461,7 +461,8 @@ func requireCLI(t *testing.T) {
 
 func TestLinuxNative_AKeyFileWrappedByTheProvisioningTool_RevealsItsDEKThroughTheWrapper(t *testing.T) {
 	// The deployment path: hkdfguard wraps a delivered DEK on the host, in its own
-	// process, and the application unwraps the key file through this binding.
+	// process, and the application reads the key file through the native library and unwraps it
+	// through this binding.
 	_, service := linuxProvisionedLibrary(t)
 	requireCLI(t)
 
@@ -487,11 +488,11 @@ func TestLinuxNative_AKeyFileWrappedByTheProvisioningTool_RevealsItsDEKThroughTh
 		t.Errorf("key file mode = %04o, want 0600", info.Mode().Perm())
 	}
 
-	wrapped, err := os.ReadFile(keyFile)
+	w, err := New(service)
 	if err != nil {
 		t.Fatal(err)
 	}
-	w, err := New(service)
+	wrapped, err := w.ReadKeyFile(context.Background(), keyFile) // through hkdfguard_open_file, as dek.Build reads it
 	if err != nil {
 		t.Fatal(err)
 	}
