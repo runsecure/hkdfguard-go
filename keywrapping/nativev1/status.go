@@ -22,10 +22,11 @@ const (
 	errInvalidServiceName = -8
 	errPolicyInvalid      = -9
 
-	// Wrapped payload (-10..-15; -13..-15 reserved)
-	errPayloadMalformed   = -10
-	errPayloadAuthFailed  = -11
-	errPayloadUnsupported = -12
+	// Wrapped payload (-10..-15; -14..-15 reserved)
+	errPayloadMalformed      = -10
+	errPayloadAuthFailed     = -11
+	errPayloadUnsupported    = -12
+	errPayloadVersionRefused = -13
 
 	// KEK and process (-16..-31; -21..-31 reserved)
 	errKEKFingerprintMismatch = -16
@@ -67,9 +68,10 @@ var statusDescriptions = map[int32]string{
 	errInternalError:                  "an unexpected internal failure in the native library",
 	errInvalidServiceName:             "the service name is null, empty, too long, or has a character other than an ASCII letter, digit or '.'",
 	errPolicyInvalid:                  "the machine's HkdfGuard policy is invalid",
-	errPayloadMalformed:               "the wrapped payload is not a valid WrappedDekV1",
+	errPayloadMalformed:               "the wrapped payload is not a valid wrapped DEK",
 	errPayloadAuthFailed:              "AES-GCM authentication failed: the wrapped payload was altered",
 	errPayloadUnsupported:             "the wrapped payload's version or suite is not one this native library understands",
+	errPayloadVersionRefused:          "the wrapped payload's version is one this native library understands, but this host's policy does not use",
 	errKEKFingerprintMismatch:         "the payload was wrapped under a different KEK than this service's current one",
 	errKEKNotFound:                    "no KEK is provisioned for this service; run hkdfguard provision",
 	errKEKAccessDenied:                "the KEK exists, but this account is not authorized to use it",
@@ -97,8 +99,10 @@ func describeStatus(status int32) string { return statusDescriptions[status] }
 // windowsStatusHints says what a status means on Windows where that is more specific than the
 // shared meaning.
 var windowsStatusHints = map[int32]string{
+	errProviderUnavailable:    `payload version 2 is unavailable on this host: the TPM can't be used for it and KeyStoragePolicy, or an existing TPM KEK, rules out the software key store (event 2008 names the reason); set HKLM\Software\Policies\HkdfGuard\ClassicalMode to 1 to keep using version 1`,
 	errProviderError:          "the KEK's key storage provider (Platform Crypto Provider or Software KSP) could not open or create the key",
 	errPolicyInvalid:          `a machine policy value under HKLM\Software\Policies\HkdfGuard is invalid`,
+	errPayloadVersionRefused:  `the wrapped payload is the other payload version from the one HKLM\Software\Policies\HkdfGuard\ClassicalMode selects (absent or 0: version 2; 1: version 1); a host unwraps only its own version`,
 	errKEKNotFound:            "no KEK is provisioned for this service; run hkdfguard provision from an elevated prompt",
 	errKEKAccessDenied:        "the KEK exists, but this account is not authorized to use it (or, for a new KEK, the process is not elevated); add it to the HkdfGuardUsers group or a KeyUseGroups group",
 	errKEKInvalid:             "the existing KEK's ACL is missing, lacks SYSTEM/Administrators, or grants an over-broad principal",
