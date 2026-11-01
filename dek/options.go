@@ -51,6 +51,10 @@ type Options struct {
 	// registered for decryption. Unset keeps DefaultEphemeralKeyRetention.
 	EphemeralKeyRetentionHours *int `json:"EphemeralKeyRetentionHours,omitempty"`
 
+	// KeyFileMaxAgeDays is how many days (1 to MaxKeyFileMaxAgeDays) after a key file was last
+	// written it stops encrypting. Unset keeps DefaultKeyFileMaxAgeDays.
+	KeyFileMaxAgeDays *int `json:"KeyFileMaxAgeDays,omitempty"`
+
 	// KeyFiles are versions whose wrapped DEK is read from a file.
 	KeyFiles []KeyFileOptions `json:"KeyFiles,omitempty"`
 
@@ -88,6 +92,9 @@ func (o Options) Validate() error {
 	}
 	if o.EphemeralKeyRetentionHours != nil && *o.EphemeralKeyRetentionHours < 1 {
 		fail("EphemeralKeyRetentionHours must be at least 1.")
+	}
+	if o.KeyFileMaxAgeDays != nil && (*o.KeyFileMaxAgeDays < MinKeyFileMaxAgeDays || *o.KeyFileMaxAgeDays > MaxKeyFileMaxAgeDays) {
+		fail("KeyFileMaxAgeDays must be between %d and %d.", MinKeyFileMaxAgeDays, MaxKeyFileMaxAgeDays)
 	}
 	if o.DisableEphemeralKeyRotation && o.EphemeralKeyRotationHours != nil {
 		fail("DisableEphemeralKeyRotation and EphemeralKeyRotationHours can't both be set: one turns rotation off, the other schedules it.")
@@ -163,6 +170,9 @@ func (o Options) Config(keyWrapper hkdfguard.KeyWrapper, factory hkdfguard.Crypt
 	}
 	if o.EphemeralKeyRetentionHours != nil {
 		config.EphemeralKeyRetention = time.Duration(*o.EphemeralKeyRetentionHours) * time.Hour
+	}
+	if o.KeyFileMaxAgeDays != nil {
+		config.KeyFileMaxAgeDays = *o.KeyFileMaxAgeDays
 	}
 	if len(o.KeyFiles) > 0 {
 		config.KeyFiles = make(map[int]string, len(o.KeyFiles))

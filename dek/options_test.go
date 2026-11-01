@@ -69,6 +69,8 @@ func TestOptions_RangesAreChecked(t *testing.T) {
 		{func(o *Options) { o.EphemeralKeyRotationHours = intPtr(0) }, "EphemeralKeyRotationHours must be between 1 and 1193"},
 		{func(o *Options) { o.EphemeralKeyRotationHours = intPtr(MaxEphemeralKeyRotationHours + 1) }, "EphemeralKeyRotationHours must be between 1 and 1193"},
 		{func(o *Options) { o.EphemeralKeyRetentionHours = intPtr(-1) }, "EphemeralKeyRetentionHours must be at least 1"},
+		{func(o *Options) { o.KeyFileMaxAgeDays = intPtr(0) }, "KeyFileMaxAgeDays must be between 1 and 3650."},
+		{func(o *Options) { o.KeyFileMaxAgeDays = intPtr(MaxKeyFileMaxAgeDays + 1) }, "KeyFileMaxAgeDays must be between 1 and 3650."},
 	}
 	for _, c := range cases {
 		o := validOptions()
@@ -87,6 +89,20 @@ func TestOptions_RangesAreChecked(t *testing.T) {
 	unset.KeyRefreshInterval = nil
 	if err := unset.Validate(); err != nil {
 		t.Errorf("unset interval: %v", err)
+	}
+}
+
+func TestOptions_AKeyFileAgeAtEitherLimit_IsAccepted_AlsoFromAppSettings(t *testing.T) {
+	for _, days := range []int{1, 3650} {
+		o := validOptions()
+		o.KeyFileMaxAgeDays = intPtr(days)
+		if err := o.Validate(); err != nil {
+			t.Errorf("%d days: %v", days, err)
+		}
+	}
+	options, err := OptionsFromJSON([]byte(`{"HkdfGuard":{"keyFileMaxAgeDays":180}}`), "HkdfGuard")
+	if err != nil || options.KeyFileMaxAgeDays == nil || *options.KeyFileMaxAgeDays != 180 {
+		t.Errorf("from JSON: %+v, %v", options.KeyFileMaxAgeDays, err)
 	}
 }
 
@@ -149,6 +165,7 @@ func TestOptions_Config_CarriesEverySetting(t *testing.T) {
 		MaxRefreshFailures:         intPtr(5),
 		EphemeralKeyRotationHours:  intPtr(6),
 		EphemeralKeyRetentionHours: intPtr(48),
+		KeyFileMaxAgeDays:          intPtr(90),
 		KeyFiles:                   []KeyFileOptions{{Version: 1, Path: "/etc/app/key.v1"}},
 		EphemeralKeys:              []int{2},
 	}
@@ -168,6 +185,8 @@ func TestOptions_Config_CarriesEverySetting(t *testing.T) {
 		t.Errorf("policy %v", config.RefreshFailurePolicy)
 	case config.EphemeralKeyRotation != 6*time.Hour || config.EphemeralKeyRetention != 48*time.Hour:
 		t.Errorf("rotation %v, retention %v", config.EphemeralKeyRotation, config.EphemeralKeyRetention)
+	case config.KeyFileMaxAgeDays != 90:
+		t.Errorf("key file max age %d", config.KeyFileMaxAgeDays)
 	case config.KeyFiles[1] != "/etc/app/key.v1" || !slices.Equal(config.EphemeralKeys, []int{2}):
 		t.Errorf("keys %v, %v", config.KeyFiles, config.EphemeralKeys)
 	}
@@ -185,8 +204,8 @@ func TestOptions_Config_LeavesUnsetSettingsAtTheirDefaults(t *testing.T) {
 	if config.EphemeralKeyRotation != 0 || config.EphemeralKeyRetention != 0 || config.DisableEphemeralKeyRotation {
 		t.Error("rotation settings changed from their defaults")
 	}
-	if config.KeyRefreshInterval != 0 {
-		t.Errorf("interval = %v", config.KeyRefreshInterval)
+	if config.KeyRefreshInterval != 0 || config.KeyFileMaxAgeDays != 0 {
+		t.Errorf("interval = %v, key file max age = %d", config.KeyRefreshInterval, config.KeyFileMaxAgeDays)
 	}
 }
 

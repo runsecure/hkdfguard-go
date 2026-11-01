@@ -142,7 +142,8 @@ exits, which suits caches and other in-process data; never persist it.
 
 If an application does encrypt values that must outlive the process under a key file, its
 encryptions under that file are not counted together across instances and restarts. Bound them by
-deploying a new key file at a higher version regularly.
+deploying a new key file at a higher version regularly. `dek.Config.KeyFileMaxAgeDays` (365 days by default) enforces this: a
+current key file stops encrypting at that age, and decryption under it never stops.
 
 ### `keywrapping/nativev1` (separate module)
 
