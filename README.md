@@ -113,7 +113,9 @@ secrets := encryptedconfig.New(ring, lookup)
 n, err := secrets.Decrypt(ctx, "ConnectionStrings:Admin", buf)
 ```
 
-A `Reader` is a `ProtectedReadOnlyCache`, so it can join a `cache.Collection`.
+A `Reader` is a `ProtectedReadOnlyCache`, so it can join a `cache.Collection`. `Decrypt` returns 0
+both for a missing key and for a protected empty value; `TryDecrypt` also reports whether the key
+was found, when the two must be told apart.
 
 ### `cryptoprovider/aesgcm256` (separate module)
 

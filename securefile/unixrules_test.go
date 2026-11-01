@@ -154,6 +154,68 @@ func TestUnixRules_RefuseGroupWritable_UnlessTheGroupIsTrusted(t *testing.T) {
 	requireResolved(t, fs, unixKeyFile, unixKeyFile, deployerTrust)
 }
 
+// withACL gives path's status the named-entry write grants of an access ACL.
+func (fs *fakeFileSystem) withACL(path string, writers ...aclWriter) *fakeFileSystem {
+	s := fs.entries[path]
+	s.aclWriters = writers
+	fs.entries[path] = s
+	return fs
+}
+
+func TestUnixRules_RefuseANamedACLWriterThatIsNotTrusted_EvenWithATrustedGroup(t *testing.T) {
+	// A trusted deployer group may write; an ACL entry quietly lets uid 1002 write too.
+	fs := standardFileSystem().dir("/etc/hkdfguard/keys", owned{mode: 0o775, group: gidDeployers}).
+		file(unixKeyFile, owned{mode: 0o660, group: gidDeployers}).
+		withACL("/etc/hkdfguard/keys", aclWriter{id: uidApp})
+	requireRefusedWith(t, fs, unixKeyFile, deployerTrust, ErrUntrusted, "access ACL", "uid 1002", "/etc/hkdfguard/keys")
+
+	fs.withACL("/etc/hkdfguard/keys").withACL(unixKeyFile, aclWriter{group: true, id: 3003})
+	requireRefusedWith(t, fs, unixKeyFile, deployerTrust, ErrUntrusted, "access ACL", "group 3003")
+}
+
+func TestUnixRules_AllowNamedACLWritersThatAreTrusted(t *testing.T) {
+	fs := standardFileSystem().dir("/etc/hkdfguard/keys", owned{mode: 0o775, group: gidDeployers}).
+		file(unixKeyFile, owned{mode: 0o660, group: gidDeployers}).
+		withACL(unixKeyFile, aclWriter{id: uidDeployer}, aclWriter{id: uidRoot}, aclWriter{group: true, id: gidDeployers})
+	requireResolved(t, fs, unixKeyFile, unixKeyFile, deployerTrust)
+}
+
+func TestParsePOSIXAccessACL_ReturnsTheNamedEntriesThatGrantWrite(t *testing.T) {
+	entry := func(tag, perm uint16, id uint32) []byte {
+		return []byte{byte(tag), byte(tag >> 8), byte(perm), byte(perm >> 8), byte(id), byte(id >> 8), byte(id >> 16), byte(id >> 24)}
+	}
+	value := []byte{2, 0, 0, 0}
+	value = append(value, entry(0x01, 0x7, 0xFFFFFFFF)...) // ACL_USER_OBJ rwx
+	value = append(value, entry(0x02, 0x6, 1002)...)       // ACL_USER 1002 rw-: a writer
+	value = append(value, entry(0x02, 0x4, 1003)...)       // ACL_USER 1003 r--: not
+	value = append(value, entry(0x04, 0x6, 0xFFFFFFFF)...) // ACL_GROUP_OBJ rw-: st_mode shows it
+	value = append(value, entry(0x08, 0x2, 3003)...)       // ACL_GROUP 3003 -w-: a writer
+	value = append(value, entry(0x10, 0x6, 0xFFFFFFFF)...) // ACL_MASK
+	value = append(value, entry(0x20, 0x4, 0xFFFFFFFF)...) // ACL_OTHER
+
+	writers, err := parsePOSIXAccessACL(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []aclWriter{{id: 1002}, {group: true, id: 3003}}
+	if fmt.Sprint(writers) != fmt.Sprint(want) {
+		t.Fatalf("writers = %v, want %v", writers, want)
+	}
+}
+
+func TestParsePOSIXAccessACL_RefusesAValueThatIsNotAVersion2ACL(t *testing.T) {
+	for name, value := range map[string][]byte{
+		"empty":           {},
+		"short header":    {2, 0},
+		"partial entry":   {2, 0, 0, 0, 1, 0, 7, 0},
+		"another version": {1, 0, 0, 0},
+	} {
+		if _, err := parsePOSIXAccessACL(value); err == nil {
+			t.Errorf("%s: parsed without an error", name)
+		}
+	}
+}
+
 func TestUnixRules_RefuseGroupWritableByAnotherGroup_EvenWithATrustedGroup(t *testing.T) {
 	requireRefusedWith(t, standardFileSystem().file(unixKeyFile, owned{mode: 0o660, group: uidApp}), unixKeyFile, deployerTrust, ErrUntrusted)
 }

@@ -1,6 +1,7 @@
 package securefile
 
 import (
+	"encoding/binary"
 	"fmt"
 	"io/fs"
 	"strings"
@@ -42,6 +43,49 @@ type unixFileStatus struct {
 	mode uint32
 	// fileType is what kind of file it is - a symbolic link is reported as such, never followed.
 	fileType unixFileType
+	// aclWriters is every named user and group a POSIX access ACL lets write it (Linux), read only
+	// when the group-write bit is set: with an ACL that bit is the ACL's mask, which caps every
+	// named entry, so when it is clear no named entry can write and nothing needs reading.
+	aclWriters []aclWriter
+}
+
+// aclWriter is a named user or group entry of a POSIX access ACL that grants write.
+type aclWriter struct {
+	group bool // a named group (ACL_GROUP), not a named user (ACL_USER)
+	id    uint32
+}
+
+// POSIX ACL extended-attribute layout (system.posix_acl_access): a little-endian 4-byte version,
+// then 8-byte entries of tag (2 bytes), permissions (2) and id (4).
+const (
+	posixACLVersion    = 2
+	posixACLHeaderSize = 4
+	posixACLEntrySize  = 8
+	posixACLUser       = 0x02 // ACL_USER: a named user
+	posixACLGroup      = 0x08 // ACL_GROUP: a named group
+	posixACLWrite      = 0x02 // ACL_WRITE
+)
+
+// parsePOSIXAccessACL returns the named user and group entries of a system.posix_acl_access value
+// that grant write; the owner, owning group, mask and other entries are what st_mode already shows.
+// A value that isn't a well-formed version-2 ACL is an error: what it grants can't be known.
+func parsePOSIXAccessACL(value []byte) ([]aclWriter, error) {
+	if len(value) < posixACLHeaderSize || (len(value)-posixACLHeaderSize)%posixACLEntrySize != 0 {
+		return nil, fmt.Errorf("an access ACL of %d bytes is not a whole number of entries", len(value))
+	}
+	if version := binary.LittleEndian.Uint32(value); version != posixACLVersion {
+		return nil, fmt.Errorf("an access ACL of version %d, not %d", version, posixACLVersion)
+	}
+	var writers []aclWriter
+	for entry := value[posixACLHeaderSize:]; len(entry) > 0; entry = entry[posixACLEntrySize:] {
+		tag := binary.LittleEndian.Uint16(entry)
+		perm := binary.LittleEndian.Uint16(entry[2:])
+		id := binary.LittleEndian.Uint32(entry[4:])
+		if perm&posixACLWrite != 0 && (tag == posixACLUser || tag == posixACLGroup) {
+			writers = append(writers, aclWriter{group: tag == posixACLGroup, id: id})
+		}
+	}
+	return writers, nil
 }
 
 const (
@@ -65,7 +109,9 @@ type unixReadLinkFunc func(path string) (target string, ok bool, err error)
 // the path the way the kernel would, from "/", checking everything it passes through, and returns
 // the resolved path, which contains no symbolic links. Every directory and the file itself must be
 // owned by root or a KeyFileTrust user, must not be writable by others, and may be writable by its
-// group only if that is a KeyFileTrust group. A symbolic link is followed only if a trusted user
+// group only if that is a KeyFileTrust group. On Linux, a group-writable one may also carry a POSIX
+// access ACL only if every named user and group it lets write is trusted too (the group-write bit is
+// then the ACL's mask, so a write grant there would otherwise go unseen). A symbolic link is followed only if a trusted user
 // owns it, and its target is then checked in turn - so macOS's root-owned /etc to private/etc
 // works, and a link anyone else made doesn't. Nothing under /tmp, /var/tmp or another
 // world-writable directory passes, sticky or not.
@@ -175,6 +221,16 @@ func requireTrusted(candidate string, status unixFileStatus, trust KeyFileTrust,
 	}
 	if status.mode&groupWrite != 0 && !trust.isTrustedGroup(status.groupID) {
 		return untrustedUnix(path, "'%s' is writable by group %d, which is not a trusted group", candidate, status.groupID)
+	}
+	// With an access ACL the group-write bit is its mask, and a named entry can grant write that the
+	// owner and group alone don't show: each must be trusted too.
+	for _, writer := range status.aclWriters {
+		if writer.group && !trust.isTrustedGroup(writer.id) {
+			return untrustedUnix(path, "its access ACL lets group %d write '%s', and that is not a trusted group", writer.id, candidate)
+		}
+		if !writer.group && !trust.isTrustedUser(writer.id) {
+			return untrustedUnix(path, "its access ACL lets uid %d write '%s', and that is not root or a trusted user", writer.id, candidate)
+		}
 	}
 	return nil
 }
