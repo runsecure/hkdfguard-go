@@ -234,8 +234,8 @@ library (`hkdfguard_open_file`), which refuses:
   symbolic link, junction or other reparse point, an 8.3 short name (`PROGRA~1`), or a network,
   mapped or SUBST drive - a folder created directly under `C:\` inherits "Authenticated Users:
   Modify" and is refused until its permissions are narrowed;
-- a file holding what looks like an *unwrapped* key - 32 raw bytes, or 64 hex digits, or base64,
-  with or without surrounding whitespace. Treat that as a key exposure: the key is compromised;
+- a file holding what looks like an *unwrapped* key - 32 raw bytes, optionally followed by one
+  line ending (LF or CRLF), or 64 hex digits, or base64, with or without surrounding whitespace. Treat that as a key exposure: the key is compromised;
 - a file of the wrong size, or the right size but not a valid wrapped key.
 
 Each refusal is a `*nativev1.KeyFileError` naming the file, the status and what it means. The file
@@ -369,6 +369,14 @@ The map key you give `KeyFiles` is the version that appears as `v1` in every val
 rotate, add a `v2.key` as `KeyFiles: map[int]string{1: v1Path, 2: v2Path}`. New values use the
 highest version, and older values still decrypt as long as their key file stays registered.
 
+Rotate at least yearly. AES-GCM is only safe for a limited number of encryptions under one key,
+and a key file outlives the process that counts them. So a key file stops encrypting 365 days
+after it was last written (`KeyFileMaxAgeDays` in `dek.Config` or in `appsettings.json` sets
+anywhere from 1 to 3650). A warning is logged at 90% of that age. After it, encrypting fails with
+`hkdfguard.ErrEncryptionLimitReached`, and values under that key file still decrypt. The age is the
+file's modification time, so copy key files with their timestamps kept (`cp -p`, `rsync -t`). A
+plain copy resets the clock.
+
 > This step makes the key file the key your program encrypts with, so you can watch a value survive
 > a restart. In an application, key files hold what your deployment pipeline encrypted, and are
 > read at runtime to decrypt it. For values the application encrypts while it runs, add an
@@ -377,7 +385,7 @@ highest version, and older values still decrypt as long as their key file stays 
 
 The same settings can come from a file shared with the .NET port: `dek.OptionsFromJSON` reads the
 `HkdfGuard` section of an `appsettings.json`, with the same field names (`ServiceName`,
-`KeyRefreshInterval`, `KeyFiles`, `EphemeralKeys`, ...), and `Options.Config` turns it into the
+`KeyRefreshInterval`, `KeyFileMaxAgeDays`, `KeyFiles`, `EphemeralKeys`, ...), and `Options.Config` turns it into the
 `dek.Config` above.
 
 ## If something goes wrong
@@ -405,6 +413,7 @@ the same on Windows, Linux and macOS.
 | `KeyFileError` `-37`, `hkdfguard.ErrInvalidKeyFile` | The file holds what looks like an **unwrapped** key | Treat the key as exposed: rotate it, delete the file, and create a key file with `wrap` |
 | `KeyFileError` `-35`, `-36` or `-38`, `hkdfguard.ErrInvalidKeyFile` | The key file is the wrong size, or not a valid wrapped key | Recreate it with `wrap` |
 | `hkdfguard.ErrKeyAccessSuspended` | The KEK stopped answering for three refreshes in a row | Restore access to the KEK; operations resume on the next successful refresh |
+| `hkdfguard.ErrEncryptionLimitReached` naming a key file | The current key file is older than `KeyFileMaxAgeDays` (365 by default) | Wrap a new key file and register it at a higher version (step 5); old values keep decrypting |
 
 ## Next steps
 

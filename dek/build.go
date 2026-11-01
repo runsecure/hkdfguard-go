@@ -8,10 +8,12 @@ import (
 	"log/slog"
 	"maps"
 	"math"
+	"os"
 	"slices"
 	"time"
 
 	"github.com/runsecure/hkdfguard-go"
+	"github.com/runsecure/hkdfguard-go/diagnostics"
 )
 
 const (
@@ -34,7 +36,26 @@ const (
 	// MinKeyRefreshInterval and MaxKeyRefreshInterval bound Config.KeyRefreshInterval.
 	MinKeyRefreshInterval = time.Second
 	MaxKeyRefreshInterval = 300 * time.Second
+
+	// DefaultKeyFileMaxAgeDays is how many days after it was last written a key file stops
+	// encrypting, unless configured otherwise. AES-GCM with random nonces is safe for about 2^32
+	// encryptions under one key in total, and a key file outlives the process that counts them, so
+	// it is bounded by age instead: rotate key files by deploying a new one at a higher version.
+	// Decryption under an old key file never stops.
+	DefaultKeyFileMaxAgeDays = 365
+
+	// MinKeyFileMaxAgeDays and MaxKeyFileMaxAgeDays bound Config.KeyFileMaxAgeDays.
+	MinKeyFileMaxAgeDays = 1
+	MaxKeyFileMaxAgeDays = 3650
+
+	// KeyFileAgeWarningFraction is the fraction of the maximum age after which a warning is
+	// logged: 90%, about five weeks of a year.
+	KeyFileAgeWarningFraction = 0.9
 )
+
+// isoTimestamp formats a time as JavaScript's Date.toISOString does (UTC, milliseconds), so the
+// message reads the same in every port.
+const isoTimestamp = "2006-01-02T15:04:05.000Z07:00"
 
 var (
 	// ErrInvalidConfig reports a Config that is missing something Build needs, or has a value out
@@ -86,7 +107,8 @@ type Config struct {
 	// KeyWrapper.ReadKeyFile, never with ordinary file I/O: a principal who could rewrite a key
 	// file, and reach the KEK, could substitute a DEK they know, so the wrapper refuses a file
 	// another account could have written or replaced (the native key wrapper through the native
-	// library's own checks).
+	// library's own checks). Build only stats the file itself, for its modification time - the key
+	// file's age (see KeyFileMaxAgeDays).
 	KeyFiles map[int]string
 
 	// EphemeralKeys are versions whose DEK is generated at Build time and never written to disk.
@@ -117,12 +139,23 @@ type Config struct {
 	// DefaultEphemeralKeyRetention when zero.
 	EphemeralKeyRetention time.Duration
 
-	// Logger receives an entry for every ephemeral key rotation, failed rotation and retirement.
+	// KeyFileMaxAgeDays is how many days (MinKeyFileMaxAgeDays to MaxKeyFileMaxAgeDays) after a
+	// key file was last written it stops encrypting, or DefaultKeyFileMaxAgeDays when zero. Its age
+	// is its modification time, so copy key files with their timestamps preserved (cp -p, rsync
+	// -t). A warning is logged at KeyFileAgeWarningFraction of the age; past it, Encrypt fails with
+	// hkdfguard.ErrEncryptionLimitReached and decryption still works. Only the current version ever
+	// encrypts, so only it is reported. Ephemeral keys have no age limit.
+	KeyFileMaxAgeDays int
+
+	// Logger receives an entry for every ephemeral key rotation, failed rotation and retirement,
+	// and for a current key file nearing or past its maximum age.
 	Logger *slog.Logger
 
-	// Test hooks: rotation ticks the test sends, and a callback after each rotation attempt.
+	// Test hooks: rotation ticks the test sends, a callback after each rotation attempt, and the
+	// clock key-file deadlines are checked against (time.Now when nil).
 	rotationTicks <-chan time.Time
 	afterRotate   func()
+	now           func() time.Time
 }
 
 func (c *Config) validate() error {
@@ -139,6 +172,8 @@ func (c *Config) validate() error {
 		return fmt.Errorf("%w: EphemeralKeyRotation must be at least %v, got %v", ErrInvalidConfig, MinEphemeralKeyRotation, c.EphemeralKeyRotation)
 	case c.EphemeralKeyRetention != 0 && c.EphemeralKeyRetention < MinEphemeralKeyRetention:
 		return fmt.Errorf("%w: EphemeralKeyRetention must be at least %v, got %v", ErrInvalidConfig, MinEphemeralKeyRetention, c.EphemeralKeyRetention)
+	case c.KeyFileMaxAgeDays != 0 && (c.KeyFileMaxAgeDays < MinKeyFileMaxAgeDays || c.KeyFileMaxAgeDays > MaxKeyFileMaxAgeDays):
+		return fmt.Errorf("%w: KeyFileMaxAgeDays must be between %d and %d, got %d", ErrInvalidConfig, MinKeyFileMaxAgeDays, MaxKeyFileMaxAgeDays, c.KeyFileMaxAgeDays)
 	}
 	if version, superseded := keyFileSupersededByRotation(maps.Keys(c.KeyFiles), c.EphemeralKeys, c.DisableEphemeralKeyRotation); superseded {
 		return fmt.Errorf("%w: key file version %d is above every ephemeral version, so the first scheduled rotation would replace it as the current version and new values would be encrypted under a key that does not survive a restart; configure the ephemeral key at a version above every key file, or disable ephemeral key rotation", ErrInvalidConfig, version)
@@ -169,7 +204,9 @@ func keyFileSupersededByRotation(keyFileVersions iter.Seq[int], ephemeralVersion
 // validates config first, reading no file and creating no key when it is invalid - including a key
 // file above every ephemeral version while ephemeral key rotation is enabled. If anything fails
 // partway - an unreadable file, an unwrap failure, a version registered twice, ctx cancelled -
-// every key created so far is closed and the error returned.
+// every key created so far is closed and the error returned. Each key file's key stops encrypting
+// at its maximum age (Config.KeyFileMaxAgeDays); a current key file already nearing or past it is
+// reported once Build has populated the ring.
 func Build(ctx context.Context, config Config) (*KeyRing, error) {
 	if err := config.validate(); err != nil {
 		return nil, err
@@ -179,6 +216,15 @@ func Build(ctx context.Context, config Config) (*KeyRing, error) {
 	if err := populate(ctx, ring, &config); err != nil {
 		_ = ring.Close()
 		return nil, err
+	}
+
+	// Report a current key file already nearing or past its age now, not at its first encrypt.
+	if version, err := ring.CurrentVersion(); err == nil {
+		if current, ok := ring.TryGet(ctx, version); ok {
+			if key, ok := current.(*Key); ok {
+				key.CheckDeadline(key.clock())
+			}
+		}
 	}
 
 	if len(config.EphemeralKeys) > 0 && !config.DisableEphemeralKeyRotation {
@@ -213,28 +259,26 @@ func populate(ctx context.Context, ring *KeyRing, config *Config) error {
 	}
 	slices.Sort(versions)
 
+	maxAgeDays := config.KeyFileMaxAgeDays
+	if maxAgeDays == 0 {
+		maxAgeDays = DefaultKeyFileMaxAgeDays
+	}
 	for _, version := range versions {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		// Read through the key wrapper, which checks who could have written the file.
-		wrapped, err := config.KeyWrapper.ReadKeyFile(ctx, config.KeyFiles[version])
+		path := config.KeyFiles[version]
+		wrapped, modified, err := readKeyFile(ctx, config.KeyWrapper, path)
 		if err != nil {
 			return err
-		}
-		// Whatever the key wrapper, a wrapped key is never empty and never over the limit.
-		switch {
-		case len(wrapped) == 0:
-			return fmt.Errorf("%w: key file '%s' is empty", hkdfguard.ErrInvalidKeyFile, config.KeyFiles[version])
-		case len(wrapped) > hkdfguard.MaxWrappedKeyBytes:
-			return fmt.Errorf("%w: key file '%s' is larger than %d bytes (hkdfguard.MaxWrappedKeyBytes); a wrapped key never is",
-				hkdfguard.ErrInvalidKeyFile, config.KeyFiles[version], hkdfguard.MaxWrappedKeyBytes)
 		}
 		provider, err := config.CryptoProviderFactory.Create(ctx, config.KeyWrapper, wrapped, config.KeyRefreshInterval, config.RefreshFailurePolicy)
 		if err != nil {
 			return err
 		}
-		if err := addOwned(ctx, ring, version, provider); err != nil {
+		key := NewKeyWithDeadline(provider, keyFileDeadline(version, path, modified, maxAgeDays, config.Logger))
+		key.now = config.now
+		if err := addOwnedKey(ctx, ring, version, key); err != nil {
 			return err
 		}
 	}
@@ -254,8 +298,49 @@ func populate(ctx context.Context, ring *KeyRing, config *Config) error {
 	return nil
 }
 
+// readKeyFile reads a key file's wrapped DEK through the key wrapper - whose own checks decide
+// whether anyone but a trusted account could have written or replaced it - and its modification
+// time, the key file's age.
+func readKeyFile(ctx context.Context, wrapper hkdfguard.KeyWrapper, path string) ([]byte, time.Time, error) {
+	wrapped, err := wrapper.ReadKeyFile(ctx, path)
+	if err != nil {
+		return nil, time.Time{}, err
+	}
+	// Whatever the key wrapper, a wrapped key is never empty and never over the limit.
+	switch {
+	case len(wrapped) == 0:
+		return nil, time.Time{}, fmt.Errorf("%w: key file '%s' is empty", hkdfguard.ErrInvalidKeyFile, path)
+	case len(wrapped) > hkdfguard.MaxWrappedKeyBytes:
+		return nil, time.Time{}, fmt.Errorf("%w: key file '%s' is larger than %d bytes (hkdfguard.MaxWrappedKeyBytes); a wrapped key never is",
+			hkdfguard.ErrInvalidKeyFile, path, hkdfguard.MaxWrappedKeyBytes)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, time.Time{}, err
+	}
+	return wrapped, info.ModTime(), nil
+}
+
+// keyFileDeadline is when the key file at path, last written at modified, stops encrypting, and
+// who hears about it.
+func keyFileDeadline(version int, path string, modified time.Time, maxAgeDays int, logger *slog.Logger) EncryptionDeadline {
+	maxAge := time.Duration(maxAgeDays) * 24 * time.Hour
+	refuseAt := modified.Add(maxAge)
+	return EncryptionDeadline{
+		WarnAt:   modified.Add(time.Duration(float64(maxAge) * KeyFileAgeWarningFraction)),
+		RefuseAt: refuseAt,
+		Reason: fmt.Sprintf("Key file '%s' (version %d) was last written %s, more than %d days ago (KeyFileMaxAgeDays), so it no longer encrypts: AES-GCM is only safe for a bounded number of encryptions under one key. Deploy a new key file at a higher version; values under this one still decrypt.",
+			path, version, modified.UTC().Format(isoTimestamp), maxAgeDays),
+		OnWarning: func() { diagnostics.KeyFileAgeWarning(context.Background(), logger, version, path, refuseAt) },
+		OnExpired: func() { diagnostics.KeyFileExpired(context.Background(), logger, version, path) },
+	}
+}
+
 func addOwned(ctx context.Context, ring *KeyRing, version int, provider hkdfguard.CryptoProvider) error {
-	key := NewKey(provider)
+	return addOwnedKey(ctx, ring, version, NewKey(provider))
+}
+
+func addOwnedKey(ctx context.Context, ring *KeyRing, version int, key *Key) error {
 	if err := ring.Add(ctx, version, key); err != nil {
 		_ = key.Close()
 		return err

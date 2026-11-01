@@ -62,11 +62,12 @@ func readContents(read func([]byte) (int, error), path string) ([]byte, error) {
 	return result, nil
 }
 
-// looksLikePlaintextKey is the native library's test for a plaintext key written to disk: exactly
-// 32 bytes, or a 32-byte key as 64 hex digits or as base64 (standard or URL-safe, padded or not),
-// with any surrounding whitespace. It reads contents in place, making no copy of it.
+// looksLikePlaintextKey is the native library's test for a plaintext key written to disk: 32 raw
+// bytes, optionally followed by one line ending (LF or CRLF), or a 32-byte key as 64 hex digits or
+// as base64 (standard or URL-safe, padded or not), with any surrounding whitespace. It reads
+// contents in place, making no copy of it.
 func looksLikePlaintextKey(contents []byte) bool {
-	if len(contents) == PlaintextKeyLength {
+	if isRawKey(contents) {
 		return true
 	}
 	if len(contents) > plaintextTextScanLimit {
@@ -81,6 +82,22 @@ func looksLikePlaintextKey(contents []byte) bool {
 		end--
 	}
 	return isHexKey(contents[start:end]) || isBase64Key(contents[start:end])
+}
+
+// isRawKey reports whether contents is 32 raw bytes, optionally followed by one line ending (LF
+// or CRLF), as echo, an editor or a shell redirect writes it. It decides by the total length and the
+// trailing line-ending bytes alone - never by trimming, since a raw key's own last bytes may be
+// whitespace values - and doesn't examine the key bytes.
+func isRawKey(contents []byte) bool {
+	switch len(contents) {
+	case PlaintextKeyLength:
+		return true
+	case PlaintextKeyLength + 1:
+		return contents[PlaintextKeyLength] == '\n'
+	case PlaintextKeyLength + 2:
+		return contents[PlaintextKeyLength] == '\r' && contents[PlaintextKeyLength+1] == '\n'
+	}
+	return false
 }
 
 // isWhitespace is what .NET trims: space, tab, LF, VT, FF and CR.

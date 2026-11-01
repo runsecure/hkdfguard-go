@@ -114,6 +114,38 @@ func TestReader_AMissingKey_DecryptsToNothing(t *testing.T) {
 	}
 }
 
+func TestReader_TryDecrypt_TellsAnEmptyValueFromAMissingOne(t *testing.T) {
+	ring := newRing(t)
+	reader := encryptedconfig.New(ring, mapLookup(t, map[string]string{
+		"Empty":  protectFor(t, ring, "Empty", ""),
+		"Secret": protectFor(t, ring, "Secret", "hunter2"),
+	}))
+	result := make([]byte, 16)
+
+	if n, found, err := reader.TryDecrypt(bg, "Empty", result); n != 0 || !found || err != nil {
+		t.Errorf("Empty = %d, found %v, %v; want 0 bytes, found", n, found, err)
+	}
+	if n, found, err := reader.TryDecrypt(bg, "Missing", result); n != 0 || found || err != nil {
+		t.Errorf("Missing = %d, found %v, %v; want not found", n, found, err)
+	}
+	if n, found, err := reader.TryDecrypt(bg, "Secret", result); string(result[:n]) != "hunter2" || !found || err != nil {
+		t.Errorf("Secret = %q, found %v, %v", result[:n], found, err)
+	}
+	// Decrypt itself still answers 0 for both, as the ProtectedReadOnlyCache contract says.
+	if n, err := reader.Decrypt(bg, "Empty", result); n != 0 || err != nil {
+		t.Errorf("Decrypt(Empty) = %d, %v", n, err)
+	}
+}
+
+func TestReader_TryDecrypt_ReportsAValueThatFailsAsFound(t *testing.T) {
+	ring := newRing(t)
+	reader := encryptedconfig.New(ring, mapLookup(t, map[string]string{"Other": protectFor(t, ring, "Secret", "moved")}))
+
+	if _, found, err := reader.TryDecrypt(bg, "Other", make([]byte, 16)); !found || !errors.Is(err, hkdfguard.ErrAuthenticationFailed) {
+		t.Errorf("found %v, %v; want found and ErrAuthenticationFailed", found, err)
+	}
+}
+
 func TestReader_LookupsIgnoreASCIICase(t *testing.T) {
 	ring := newRing(t)
 	reader := encryptedconfig.New(ring, mapLookup(t, map[string]string{
