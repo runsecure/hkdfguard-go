@@ -72,6 +72,20 @@ func TestReadContents_RefusesAPlaintextKeyAsExposed(t *testing.T) {
 	requireKeyFileError(t, err, hkdfguard.ErrInvalidKeyFile, "exposed")
 }
 
+func TestReadContents_RefusesAPlaintextKeyFollowedByALineEndingAsExposed(t *testing.T) {
+	for _, ending := range []string{"\n", "\r\n"} {
+		_, err := readBytes(append(random(32), ending...))
+		requireKeyFileError(t, err, hkdfguard.ErrInvalidKeyFile, "exposed")
+	}
+}
+
+func TestReadContents_DoesNotRefuseARawKeyFollowedByOnlyACarriageReturnAsExposed(t *testing.T) {
+	result, err := readBytes(append(bytes.Repeat([]byte{0x80}, 32), '\r'))
+	if err != nil || len(result) != 33 {
+		t.Fatalf("got %d bytes, %v; want the 33 bytes passed on for the key wrapper to refuse", len(result), err)
+	}
+}
+
 func TestReadContents_ReadsUntilTheEnd_HoweverTheReadsAreSplit(t *testing.T) {
 	key := wrapped()
 	chunks := [][]byte{key[:1], key[1:100], key[100:]}
@@ -160,6 +174,44 @@ func TestLooksLikePlaintextKey_DetectsAKeyWrittenAsText(t *testing.T) {
 func TestLooksLikePlaintextKey_DetectsARawKey(t *testing.T) {
 	if !looksLikePlaintextKey(random(32)) || !looksLikePlaintextKey(make([]byte, 32)) {
 		t.Error("a raw 32-byte key not detected")
+	}
+}
+
+func TestLooksLikePlaintextKey_DetectsARawKeyFollowedByALineEnding(t *testing.T) {
+	endsInNewline := random(32)
+	endsInNewline[31] = '\n'
+	endsInSpace := random(32)
+	endsInSpace[31] = ' '
+	for _, contents := range [][]byte{
+		append(random(32), '\n'),
+		append(random(32), '\r', '\n'),
+		append(make([]byte, 32), '\n'),
+		append(endsInNewline, '\n'), // the key's own last byte is a line ending: no trimming confusion
+		append(endsInSpace, '\n'),
+		append(append([]byte{}, endsInSpace...), '\r', '\n'),
+	} {
+		if !looksLikePlaintextKey(contents) {
+			t.Errorf("%x not detected", contents)
+		}
+	}
+}
+
+func TestLooksLikePlaintextKey_DoesNotDetectARawKeyWithAnythingElseAfterIt(t *testing.T) {
+	// Bytes that are neither whitespace nor text, so trimming can't make hex or base64 of them.
+	key := bytes.Repeat([]byte{0x80}, 32)
+	for _, contents := range [][]byte{
+		append(append([]byte{}, key...), '\r'),       // 33 bytes, but CR only
+		append(append([]byte{}, key...), '\n', '\n'), // 34 bytes, but two LFs
+		append(append([]byte{}, key...), '\n', '\r'), // 34 bytes, LF CR
+		append(append([]byte{}, key...), ' '),        // 33 bytes, a space
+		// A shorter key and a line ending (31 + LF or 30 + CRLF is 32 bytes, so the exact-length rule).
+		append(append([]byte{}, key[:30]...), '\n'),        // 30 bytes and LF
+		append(append([]byte{}, key[:29]...), '\r', '\n'),  // 29 bytes and CRLF
+		append(append([]byte{}, key...), '\r', '\n', '\n'), // 35 bytes
+	} {
+		if looksLikePlaintextKey(contents) {
+			t.Errorf("%x detected", contents)
+		}
 	}
 }
 

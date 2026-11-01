@@ -177,8 +177,8 @@ wrapper, err := nativev1.New("com.example.orders") // service must be provisione
 
 It also reads key files through the native library's `hkdfguard_open_file` (`KeyWrapper.ReadKeyFile`,
 which `dek.Build` uses), so the bytes come back still wrapped after the native checks: the file's
-size and format; that it doesn't hold what looks like an *unwrapped* key (32 raw bytes, or its hex
-or base64 - treat that as a key exposure); and that no account other than an administrator or the
+size and format; that it doesn't hold what looks like an *unwrapped* key (32 raw bytes, optionally
+followed by one line ending (LF or CRLF), or its hex or base64 - treat that as a key exposure); and that no account other than an administrator or the
 reader could have written or replaced it, nor redirected its path through a link, junction, 8.3
 short name or network path. A refusal is a `*nativev1.KeyFileError` naming the file, the status
 and its meaning, matchable with `errors.Is` against `fs.ErrNotExist`, `fs.ErrPermission` or
@@ -408,7 +408,7 @@ through, such as `keywrapping/awskms`, `keywrapping/azurekeyvault` and `keywrapp
   symbolic links a trusted user owns are followed, and the resolved path is opened with
   `O_NOFOLLOW` and must still be a regular file.
 - **Everywhere:** 1 to `hkdfguard.MaxWrappedKeyBytes` bytes, and not what looks like an unwrapped
-  key (32 raw bytes, or its hex or base64).
+  key (32 raw bytes, optionally followed by one line ending (LF or CRLF), or its hex or base64).
 
 `securefile.KeyFileTrust` names who besides administrators is trusted (Windows SIDs, Unix uids and
 gids); its zero value, `securefile.AdministratorsOnly()`, trusts no one else. A refusal is a

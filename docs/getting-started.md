@@ -234,8 +234,8 @@ library (`hkdfguard_open_file`), which refuses:
   symbolic link, junction or other reparse point, an 8.3 short name (`PROGRA~1`), or a network,
   mapped or SUBST drive - a folder created directly under `C:\` inherits "Authenticated Users:
   Modify" and is refused until its permissions are narrowed;
-- a file holding what looks like an *unwrapped* key - 32 raw bytes, or 64 hex digits, or base64,
-  with or without surrounding whitespace. Treat that as a key exposure: the key is compromised;
+- a file holding what looks like an *unwrapped* key - 32 raw bytes, optionally followed by one
+  line ending (LF or CRLF), or 64 hex digits, or base64, with or without surrounding whitespace. Treat that as a key exposure: the key is compromised;
 - a file of the wrong size, or the right size but not a valid wrapped key.
 
 Each refusal is a `*nativev1.KeyFileError` naming the file, the status and what it means. The file
