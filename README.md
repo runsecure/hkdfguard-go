@@ -508,24 +508,33 @@ there as well: CI names no test keys and holds no AWS, Azure or Google credentia
 write permissions.
 
 A Go module is released by its tag alone: the Go module proxy serves the tagged source, so there
-is nothing to pack, sign or push to a feed. The seven published modules are tagged separately:
+is nothing to pack, sign or push to a feed. The twelve published modules share one version and are
+tagged together, at the same commit. Before tagging, set every nested module's requirement on the
+root module and on `securefile` to that version (each `go.mod` and `integration/go.mod`), then:
 
 ```sh
-git tag v0.1.0 && git push origin v0.1.0                                             # the root module
-git tag securefile/v0.1.0 && git push origin securefile/v0.1.0
-git tag cryptoprovider/aesgcm256/v0.1.0 && git push origin cryptoprovider/aesgcm256/v0.1.0
-git tag keywrapping/nativev1/v0.1.0 && git push origin keywrapping/nativev1/v0.1.0
-git tag keywrapping/awskms/v0.1.0 && git push origin keywrapping/awskms/v0.1.0       # after securefile
-git tag keywrapping/azurekeyvault/v0.1.0 && git push origin keywrapping/azurekeyvault/v0.1.0  # after securefile
-git tag keywrapping/googlekms/v0.1.0 && git push origin keywrapping/googlekms/v0.1.0  # after securefile
+version=v0.9.1
+tags=("${version}")
+for module in securefile cryptoprovider/aesgcm256 keywrapping/nativev1 keywrapping/awskms \
+    keywrapping/azurekeyvault keywrapping/googlekms keywrapping/hashicorpvault \
+    cache/awssecretsmanager cache/azurekeyvault cache/googlesecretmanager cache/hashicorpvault; do
+  tags+=("${module}/${version}")
+done
+for tag in "${tags[@]}"; do git tag "${tag}"; done
+git push origin "${tags[@]}"
 ```
 
-The **Release** workflow (`release.yml`) then:
+The nested modules keep `replace` directives pointing the root module and `securefile` at their
+directories in this repository, so they build against this commit's code in development and CI. Go
+ignores a `replace` in a dependency, so a consumer gets the tagged versions instead - the same
+commit, because every module is tagged there.
+
+The **Release** workflow (`release.yml`) runs for each tag:
 
 1. **version**: turns the tag into the module it releases (`scripts/release-tag.sh`). A nested
-   module is refused while its `go.mod` still points at the root module with a `replace`
-   directive, or requires its placeholder version: remove the `replace` and require a tagged root
-   version first, then tag.
+   module is refused while its `go.mod` requires a placeholder version of the root module or
+   `securefile`, or has a `replace` other than one of this repository's modules by its own
+   directory.
 2. **build**: the same `build.yml` CI runs, on every OS.
 3. **publish**: archives the module's source at the tagged commit, attests its build provenance
    (`gh attestation verify <file> --repo runsecure/hkdfguard-go`), and creates the GitHub Release.
@@ -534,9 +543,3 @@ The **Release** workflow (`release.yml`) then:
 
 Unlike the .NET port there is no Azure sign-in and no `release` environment: Go modules are
 source, with nothing to Authenticode-sign. Third-party actions are pinned to full commit SHAs.
-
-Until the root module has a tagged release, `keywrapping/nativev1/go.mod`,
-`cryptoprovider/aesgcm256/go.mod`, `securefile/go.mod`, `keywrapping/awskms/go.mod`,
-`keywrapping/azurekeyvault/go.mod`, `keywrapping/googlekms/go.mod` and `integration/go.mod` point
-at it with `replace` directives; `keywrapping/awskms`, `keywrapping/azurekeyvault`,
-`keywrapping/googlekms` and `integration` point at `securefile` the same way until it is tagged.
