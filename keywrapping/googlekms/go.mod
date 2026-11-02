@@ -13,8 +13,8 @@ require (
 	cloud.google.com/go/auth v0.20.0
 	cloud.google.com/go/kms v1.35.0
 	github.com/googleapis/gax-go/v2 v2.23.0
-	github.com/runsecure/hkdfguard-go v0.0.0-00010101000000-000000000000
-	github.com/runsecure/hkdfguard-go/securefile v0.0.0-00010101000000-000000000000
+	github.com/runsecure/hkdfguard-go v0.9.1
+	github.com/runsecure/hkdfguard-go/securefile v0.9.1
 	golang.org/x/sys v0.49.0
 	google.golang.org/api v0.287.1
 	google.golang.org/grpc v1.83.2

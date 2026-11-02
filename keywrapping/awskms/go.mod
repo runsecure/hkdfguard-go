@@ -9,8 +9,8 @@ require (
 	github.com/aws/aws-sdk-go-v2/config v1.33.9
 	github.com/aws/aws-sdk-go-v2/service/kms v1.61.4
 	github.com/aws/smithy-go v1.28.5
-	github.com/runsecure/hkdfguard-go v0.0.0-00010101000000-000000000000
-	github.com/runsecure/hkdfguard-go/securefile v0.0.0-00010101000000-000000000000
+	github.com/runsecure/hkdfguard-go v0.9.1
+	github.com/runsecure/hkdfguard-go/securefile v0.9.1
 	golang.org/x/sys v0.48.0
 )
 

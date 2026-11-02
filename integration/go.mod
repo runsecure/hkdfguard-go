@@ -11,13 +11,13 @@ require (
 	github.com/aws/aws-sdk-go-v2 v1.47.3
 	github.com/aws/aws-sdk-go-v2/service/kms v1.61.4
 	github.com/googleapis/gax-go/v2 v2.23.0
-	github.com/runsecure/hkdfguard-go v0.0.0-00010101000000-000000000000
-	github.com/runsecure/hkdfguard-go/cryptoprovider/aesgcm256 v0.0.0-00010101000000-000000000000
-	github.com/runsecure/hkdfguard-go/keywrapping/awskms v0.0.0-00010101000000-000000000000
-	github.com/runsecure/hkdfguard-go/keywrapping/azurekeyvault v0.0.0-00010101000000-000000000000
-	github.com/runsecure/hkdfguard-go/keywrapping/googlekms v0.0.0-00010101000000-000000000000
-	github.com/runsecure/hkdfguard-go/keywrapping/nativev1 v0.0.0-00010101000000-000000000000
-	github.com/runsecure/hkdfguard-go/securefile v0.0.0-00010101000000-000000000000
+	github.com/runsecure/hkdfguard-go v0.9.1
+	github.com/runsecure/hkdfguard-go/cryptoprovider/aesgcm256 v0.9.1
+	github.com/runsecure/hkdfguard-go/keywrapping/awskms v0.9.1
+	github.com/runsecure/hkdfguard-go/keywrapping/azurekeyvault v0.9.1
+	github.com/runsecure/hkdfguard-go/keywrapping/googlekms v0.9.1
+	github.com/runsecure/hkdfguard-go/keywrapping/nativev1 v0.9.1
+	github.com/runsecure/hkdfguard-go/securefile v0.9.1
 	google.golang.org/grpc v1.83.2
 	google.golang.org/protobuf v1.36.11
 )

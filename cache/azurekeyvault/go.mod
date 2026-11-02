@@ -10,7 +10,7 @@ require (
 	github.com/Azure/azure-sdk-for-go/sdk/azcore v1.23.3
 	github.com/Azure/azure-sdk-for-go/sdk/azidentity v1.14.1
 	github.com/Azure/azure-sdk-for-go/sdk/security/keyvault/azsecrets v1.5.0
-	github.com/runsecure/hkdfguard-go v0.0.0-00010101000000-000000000000
+	github.com/runsecure/hkdfguard-go v0.9.1
 )
 
 require (

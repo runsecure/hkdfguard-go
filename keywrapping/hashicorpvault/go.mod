@@ -11,8 +11,8 @@ replace (
 
 require (
 	github.com/hashicorp/vault/api v1.23.0
-	github.com/runsecure/hkdfguard-go v0.0.0-00010101000000-000000000000
-	github.com/runsecure/hkdfguard-go/securefile v0.0.0-00010101000000-000000000000
+	github.com/runsecure/hkdfguard-go v0.9.1
+	github.com/runsecure/hkdfguard-go/securefile v0.9.1
 	golang.org/x/sys v0.49.0
 )
 

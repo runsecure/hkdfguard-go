@@ -28,11 +28,11 @@
 #                                                        hashicorpvault
 #   securefile/vMAJOR.MINOR.PATCH[-suffix]               that nested module
 #
-# A nested module is refused while its go.mod still points at the root module (or, for
-# the cloud key wrappers, at securefile) with a
-# replace directive, or requires a placeholder version of it: a consumer would get a module that
-# doesn't build. Remove the replace and require a tagged version first - so the root module, then
-# securefile, before the cloud key wrappers; the cache modules need only the root module.
+# A nested module is refused while its go.mod requires a placeholder version of the root module or
+# securefile: a consumer would get a module that doesn't build. Require the version being released
+# instead, and tag every module at the same commit, so what a consumer downloads is what was built
+# here. The replace directives pointing each of this repository's modules at its own directory may
+# stay - Go ignores them in a dependency - but any other replace is refused.
 #
 # Usage: scripts/release-tag.sh <tag>
 
@@ -67,9 +67,33 @@ expected_path="github.com/runsecure/hkdfguard-go"
 [[ ${module_dir} == "." ]] || expected_path="${expected_path}/${module_dir}"
 [[ ${module_path} == "${expected_path}" ]] || die "${gomod} declares module '${module_path}', but tag '${tag}' releases '${expected_path}'"
 
-if go mod edit -json "${gomod}" | grep -q '"Replace"'; then
-    die "${gomod} has a replace directive; a released module must require a tagged version of every dependency instead"
-fi
+# A replace directive applies only when its module is the one being built, so a consumer never sees
+# one: the in-repo replaces that let a module build against this commit's sibling modules may stay.
+# Anything else - another module, a remote target, a version on either side, or a path that isn't
+# that sibling's own directory - would build here differently from how it builds for a consumer.
+repo_root="$(pwd -P)"
+while read -r old_path old_version new_path new_version; do
+    [[ -n ${old_path} ]] || continue
+    [[ ${old_path} == github.com/runsecure/hkdfguard-go || ${old_path} == github.com/runsecure/hkdfguard-go/* ]] ||
+        die "${gomod} replaces '${old_path}'; only this repository's own modules may be replaced"
+    [[ ${old_version} == - && ${new_version} == - && ${new_path} == .* ]] ||
+        die "${gomod} replaces '${old_path}' with '${new_path}'; only a whole module, by its local directory, may be replaced"
+    target="$(cd "${module_dir}/${new_path}" 2>/dev/null && pwd -P)" || die "${gomod} replaces '${old_path}' with '${new_path}', which does not exist"
+    want="${repo_root}${old_path#github.com/runsecure/hkdfguard-go}"
+    [[ ${target} == "${want}" ]] || die "${gomod} replaces '${old_path}' with '${new_path}', not that module's directory in this repository"
+# Each replace as "old-path old-version new-path new-version", "-" for a version not given, from
+# go mod edit -json's fixed layout: one tab-indented object per replace, Old then New.
+done < <(go mod edit -json "${gomod}" | awk '
+    /^\t"Replace": \[/ { inreplace = 1; next }
+    !inreplace { next }
+    /^\t\]/ { inreplace = 0; next }
+    /^\t\t\{/ { oldpath = oldversion = newpath = newversion = "-" }
+    /"Old": \{/ { side = "old" }
+    /"New": \{/ { side = "new" }
+    /"Path":/ { gsub(/[",]/, "", $2); if (side == "old") oldpath = $2; else newpath = $2 }
+    /"Version":/ { gsub(/[",]/, "", $2); if (side == "old") oldversion = $2; else newversion = $2 }
+    /^\t\t\}/ { print oldpath, oldversion, newpath, newversion }
+')
 if grep -q 'v0.0.0-00010101000000-000000000000' "${gomod}"; then
     die "${gomod} requires a placeholder version (v0.0.0-00010101000000-000000000000); require a tagged version instead"
 fi

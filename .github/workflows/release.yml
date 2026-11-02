@@ -6,8 +6,9 @@
 # build-provenance attestation as the release's assets. Three jobs:
 #
 #   version  turns the tag into the module it releases (scripts/release-tag.sh); fails on a
-#            malformed tag, or on a nested module whose go.mod still carries a replace directive
-#            or a placeholder version of the root module.
+#            malformed tag, or on a nested module whose go.mod requires a placeholder version of
+#            the root module or securefile, or replaces anything but this repository's own modules
+#            with their own directories.
 #   build    build.yml, the same reusable workflow ci.yml runs, on every supported OS.
 #   publish  archives the module's source from the tagged commit, attests its provenance, and
 #            creates the GitHub Release.

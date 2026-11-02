@@ -11,7 +11,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/config v1.33.10
 	github.com/aws/aws-sdk-go-v2/service/secretsmanager v1.50.7
 	github.com/aws/smithy-go v1.28.7
-	github.com/runsecure/hkdfguard-go v0.0.0-00010101000000-000000000000
+	github.com/runsecure/hkdfguard-go v0.9.1
 )
 
 require (
