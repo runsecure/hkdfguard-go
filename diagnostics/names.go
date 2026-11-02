@@ -9,6 +9,7 @@ const (
 	SpanCacheAdd         = "hkdfguard.cache.add"
 	SpanCacheAddOrUpdate = "hkdfguard.cache.add_or_update"
 	SpanCacheDecrypt     = "hkdfguard.cache.decrypt"
+	SpanCachePopulate    = "hkdfguard.cache.populate"
 
 	SpanDataProtectionProtectorEncrypt                    = "hkdfguard.data_protection.protector.encrypt"
 	SpanDataProtectionProtectorDecrypt                    = "hkdfguard.data_protection.protector.decrypt"
@@ -52,6 +53,9 @@ const (
 const (
 	ResultSuccess = "success"
 	ResultError   = "error"
+
+	// ResultNotFound is a populating cache's fetch whose source holds no such value.
+	ResultNotFound = "not_found"
 )
 
 // Fixed span event names. Unlike the operation-specific Span* names, an event's own name stays

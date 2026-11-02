@@ -26,8 +26,8 @@
 //     only symbolic links a trusted user owns are followed; the resolved path is then opened with
 //     O_NOFOLLOW and must still be a regular file.
 //   - Everywhere: the contents must be 1 to hkdfguard.MaxWrappedKeyBytes bytes - never more than one
-//     byte past that is read - and must not look like an unwrapped key (exactly 32 bytes, or a
-//     32-byte key as hex or base64).
+//     byte past that is read - and must not look like an unwrapped key (32 raw bytes, optionally
+//     followed by one line ending (LF or CRLF), or a 32-byte key as hex or base64).
 //
 // A refusal is a *KeyFileError, matchable with errors.Is against fs.ErrNotExist, fs.ErrPermission
 // (a location that isn't trusted matches both ErrUntrusted and fs.ErrPermission),

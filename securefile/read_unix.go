@@ -100,7 +100,16 @@ func lstatStatus(path string) (unixFileStatus, bool, error) {
 	case unix.S_IFLNK:
 		fileType = unixSymbolicLink
 	}
-	return unixFileStatus{ownerID: status.Uid, groupID: status.Gid, mode: mode & 0o7777, fileType: fileType}, true, nil
+	result := unixFileStatus{ownerID: status.Uid, groupID: status.Gid, mode: mode & 0o7777, fileType: fileType}
+	// Only a group-writable mode can hide an ACL write grant: the bit is then the ACL's mask.
+	if fileType != unixSymbolicLink && result.mode&groupWrite != 0 {
+		writers, err := accessACLWriters(path)
+		if err != nil {
+			return unixFileStatus{}, false, err
+		}
+		result.aclWriters = writers
+	}
+	return result, true, nil
 }
 
 // readLink is readlink: a symbolic link's target, exactly as stored (possibly relative); ok is

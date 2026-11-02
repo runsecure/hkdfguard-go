@@ -8,9 +8,9 @@
 # trips are reported as skipped on GitHub's runners, which have no HkdfGuard native library
 # installed; a self-hosted runner with a provisioned test service runs them too. The real-KMS round
 # trips (keywrapping/awskms), real-Key Vault round trips (keywrapping/azurekeyvault) and real-Cloud
-# KMS round trips (keywrapping/googlekms) are reported as skipped too: this workflow sets no
-# HKDFGUARD_TEST_AWS_KMS_KEY_ID, HKDFGUARD_TEST_AZURE_* or HKDFGUARD_TEST_GOOGLE_KMS_KEY_NAME
-# and holds no AWS, Azure or Google credentials.
+# KMS round trips (keywrapping/googlekms) are reported as skipped too, as are the real-Vault round
+# trips (keywrapping/hashicorpvault) and the secret caches' real-store reads (cache/*): this
+# workflow sets no HKDFGUARD_TEST_* variable and holds no AWS, Azure, Google or Vault credentials.
 #
 # Holds no secrets and needs no write permission.
 name: Build
@@ -54,6 +54,11 @@ jobs:
             keywrapping/awskms/go.sum
             keywrapping/azurekeyvault/go.sum
             keywrapping/googlekms/go.sum
+            keywrapping/hashicorpvault/go.sum
+            cache/awssecretsmanager/go.sum
+            cache/azurekeyvault/go.sum
+            cache/googlesecretmanager/go.sum
+            cache/hashicorpvault/go.sum
             integration/go.sum
 
       - name: Check every module

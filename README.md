@@ -87,8 +87,15 @@ Go port of `HkdfGuard.Cache` and `ProtectedCacheBase`: values encrypted under a 
 to their names (`hkdfguard.CacheAAD`), matched ignoring ASCII case only.
 
 - `cache.New(ring)` - the read/write `ProtectedCache` (`Add`, `AddOrUpdate`, `Decrypt`).
-- `cache.NewReadOnly(ring, source)` - filled on demand from a `cache.Source`. A Vault or Azure Key
-  Vault backend implements only `Source`; encryption, name binding and telemetry stay here.
+- `cache.NewReadOnly(ring, source)` - filled on demand from a `cache.Source`, one value per name.
+- `cache.NewRemote(ring, store, options)` - the port of `RemoteSecretCache`: a read-only cache over a
+  remote secret store, filled one secret per fetch. A name is a secret's name, optionally followed
+  by `#` and a key (`"app-config#password"`); one fetch caches the whole value and every member of a
+  JSON object it holds, and concurrent misses on the same secret share one fetch. A store
+  implements only `cache.SecretStore` (`IsValidName`, `Fetch`); `cache.CaptureJSONBody` and
+  `cache.CaptureJSONKeys` take a secret out of a JSON response body before an SDK can turn it into
+  a string, so a fetched secret is never a Go string. The stores HkdfGuard ships are the
+  `cache/*` modules below.
 - `cache.NewCollection(a, b, ...)` - several caches behind one lookup, first match wins.
 
 ### `encryptedconfig`
@@ -106,7 +113,9 @@ secrets := encryptedconfig.New(ring, lookup)
 n, err := secrets.Decrypt(ctx, "ConnectionStrings:Admin", buf)
 ```
 
-A `Reader` is a `ProtectedReadOnlyCache`, so it can join a `cache.Collection`.
+A `Reader` is a `ProtectedReadOnlyCache`, so it can join a `cache.Collection`. `Decrypt` returns 0
+both for a missing key and for a protected empty value; `TryDecrypt` also reports whether the key
+was found, when the two must be told apart.
 
 ### `cryptoprovider/aesgcm256` (separate module)
 
@@ -135,7 +144,8 @@ exits, which suits caches and other in-process data; never persist it.
 
 If an application does encrypt values that must outlive the process under a key file, its
 encryptions under that file are not counted together across instances and restarts. Bound them by
-deploying a new key file at a higher version regularly.
+deploying a new key file at a higher version regularly. `dek.Config.KeyFileMaxAgeDays` (365 days by default) enforces this: a
+current key file stops encrypting at that age, and decryption under it never stops.
 
 ### `keywrapping/nativev1` (separate module)
 
@@ -169,15 +179,16 @@ wrapper, err := nativev1.New("com.example.orders") // service must be provisione
 
 It also reads key files through the native library's `hkdfguard_open_file` (`KeyWrapper.ReadKeyFile`,
 which `dek.Build` uses), so the bytes come back still wrapped after the native checks: the file's
-size and format; that it doesn't hold what looks like an *unwrapped* key (32 raw bytes, or its hex
-or base64 - treat that as a key exposure); and that no account other than an administrator or the
+size and format; that it doesn't hold what looks like an *unwrapped* key (32 raw bytes, optionally
+followed by one line ending (LF or CRLF), or its hex or base64 - treat that as a key exposure); and that no account other than an administrator or the
 reader could have written or replaced it, nor redirected its path through a link, junction, 8.3
 short name or network path. A refusal is a `*nativev1.KeyFileError` naming the file, the status
 and its meaning, matchable with `errors.Is` against `fs.ErrNotExist`, `fs.ErrPermission` or
 `hkdfguard.ErrInvalidKeyFile`.
 
 Every platform's native library returns the same status codes (the header's `HKDFGUARD_ERR_*`
-table: -17 no KEK, -18 access denied, -10..-12 a malformed, altered or unsupported payload, -16 a
+table: -17 no KEK, -18 access denied, -10..-12 a malformed, altered or unsupported payload, -13 a
+payload version this host's policy doesn't use, -16 a
 payload wrapped under another KEK, -32..-39 key-file refusals, and so on); a `*nativev1.StatusError`
 or `*nativev1.KeyFileError` carries the code and what it means on this platform. The installed
 files are `%ProgramFiles%\HkdfGuard\v1\HkdfGuard.dll` and `hkdfguard.exe` on Windows,
@@ -333,6 +344,55 @@ client libraries. See [Wrap keys with Google Cloud KMS](docs/how-to/use-google-k
 [Run the Google Cloud KMS integration tests](docs/how-to/run-google-kms-integration-tests.md) for
 its real-Cloud KMS tests, which skip unless the key is named.
 
+### `keywrapping/hashicorpvault` (separate module)
+
+Go port of `HkdfGuard.KeyWrapping.HashiCorpVault`: a `hkdfguard.KeyWrapper` over one key in a
+HashiCorp Vault transit secrets engine, through HashiCorp's own Go client,
+`github.com/hashicorp/vault/api`. DEKs are wrapped with `encrypt`, revealed with `decrypt`, and
+generated with `datakey/wrapped` - so without a context the plaintext DEK never leaves Vault. A
+context is bound in as `associated_data`. Wrapped DEKs are Vault's `vault:v<n>:<base64>`
+ciphertext, byte-compatible with the .NET wrapper under the same key and context.
+
+```go
+config := api.DefaultConfig()  // VAULT_ADDR, VAULT_CACERT, VAULT_NAMESPACE, ...
+config.DisableRedirects = true // a redirect would carry the token and the DEK elsewhere
+client, err := api.NewClient(config)
+client.SetToken(token)         // or an auth method with a LifetimeWatcher, or Vault Agent
+wrapper, err := hashicorpvault.New(client, "myapp-kek", hashicorpvault.Options{Context: "com.example.myapp"})
+```
+
+The client is the application's: address, TLS, namespace, token and its renewal, timeout and
+retries are all `api.Config`/`*api.Client` settings, replacing the .NET options and
+`IVaultTokenSource`. `New` refuses a client that would follow redirects (unless
+`Options.AllowRedirects`), or whose address isn't https (http and `unix://` only on the local
+host). Request bodies holding a DEK and Vault's answers are read through buffers the wrapper zeroes;
+the token, held by `*api.Client` as a Go string, can't be zeroed. Key files are read with
+`securefile`. See [Wrap keys with HashiCorp Vault transit](docs/how-to/use-hashicorp-vault-transit.md)
+and [Run the HashiCorp Vault transit integration tests](docs/how-to/run-hashicorp-vault-transit-integration-tests.md).
+
+### Secret caches: `cache/awssecretsmanager`, `cache/azurekeyvault`, `cache/googlesecretmanager`, `cache/hashicorpvault` (separate modules)
+
+Go ports of `HkdfGuard.Cache.AwsSecretsManager`, `.AzureKeyVault`, `.GoogleSecretManager` and
+`.HashiCorpVault`: each `New` returns a `*cache.RemoteCache` over one secret store, reading one
+secret per miss (never listing), encrypting it under the key ring, and serving it from memory after
+that. A secret holding a JSON object is cached whole and by key (`"db-login#password"`); Vault's KV
+secrets, which are sets of keys, read `Options.DefaultKey` (`"value"`) for a name without one.
+
+| Module | `New` | Names | How the secret is kept out of Go strings |
+|---|---|---|---|
+| `cache/awssecretsmanager` | `New(client, ring, options)` - the application's `*secretsmanager.Client` | exact | a per-call middleware below the SDK's deserializer captures `SecretString`/`SecretBinary` from the raw body and hands the SDK a redacted copy; response-body logging is forced off for the call |
+| `cache/azurekeyvault` | `New(vaultURL, credential, ring, options)` - builds its own `azsecrets.Client` from a copy of `Options.ClientOptions` | ignoring ASCII case | a per-retry pipeline policy reads the unbuffered body and hands the SDK a redacted copy; options that log bodies are refused |
+| `cache/googlesecretmanager` | `New(client, projectID, ring, options)` - the application's `*secretmanager.Client` | exact | the payload is `[]byte`, zeroed once encrypted; a per-call gRPC codec zeroes gRPC's pooled receive buffers; CRC32C and the secret's name are checked |
+| `cache/hashicorpvault` | `New(client, ring, options)` - the application's `*api.Client` from `github.com/hashicorp/vault/api` | exact | raw reads (`ReadRawWithContext`) parsed straight into zeroed buffers; https only (http and `unix://` on the local host), and the client must set `DisableRedirects` unless `Options.AllowRedirects` - a read has no body for `keywrapping/hashicorpvault`'s per-request redirect refusal to hook |
+
+Each is its own module so that only applications that use it depend on that SDK. What stays beyond
+reach is below the SDK - TLS and socket buffers - plus, for Vault, the token the client holds. See
+[Cache AWS Secrets Manager secrets](docs/how-to/use-aws-secrets-manager-cache.md),
+[Cache Azure Key Vault secrets](docs/how-to/use-azure-key-vault-secret-cache.md),
+[Cache Google Cloud Secret Manager secrets](docs/how-to/use-google-secret-manager-cache.md) and
+[Cache HashiCorp Vault secrets](docs/how-to/use-hashicorp-vault-secret-cache.md); each covers its
+real-store integration tests, which skip unless a secret is named.
+
 ### `securefile` (separate module)
 
 Go port of `HkdfGuard.SecureFile`: `securefile.ReadTrustedKeyFile` reads a wrapped-key file only
@@ -350,7 +410,7 @@ through, such as `keywrapping/awskms`, `keywrapping/azurekeyvault` and `keywrapp
   symbolic links a trusted user owns are followed, and the resolved path is opened with
   `O_NOFOLLOW` and must still be a regular file.
 - **Everywhere:** 1 to `hkdfguard.MaxWrappedKeyBytes` bytes, and not what looks like an unwrapped
-  key (32 raw bytes, or its hex or base64).
+  key (32 raw bytes, optionally followed by one line ending (LF or CRLF), or its hex or base64).
 
 `securefile.KeyFileTrust` names who besides administrators is trusted (Windows SIDs, Unix uids and
 gids); its zero value, `securefile.AdministratorsOnly()`, trusts no one else. A refusal is a

@@ -4,10 +4,13 @@
 # key=value lines (what the release workflow writes to $GITHUB_OUTPUT):
 #
 #   module_dir    the module's directory: ".", securefile, cryptoprovider/aesgcm256,
-#                 keywrapping/nativev1, keywrapping/awskms, keywrapping/azurekeyvault or
-#                 keywrapping/googlekms
+#                 keywrapping/nativev1, keywrapping/awskms, keywrapping/azurekeyvault,
+#                 keywrapping/googlekms, keywrapping/hashicorpvault, cache/awssecretsmanager,
+#                 cache/azurekeyvault, cache/googlesecretmanager or cache/hashicorpvault
 #   module_path   its module path
-#   artifact      the name of its source archive: hkdfguard-go, hkdfguard-go-aesgcm256, ...
+#   artifact      the name of its source archive: hkdfguard-go, hkdfguard-go-aesgcm256, ...; a
+#                 cache module's carries "cache-" (hkdfguard-go-cache-azurekeyvault), so it never
+#                 shares a name with the key wrapper for the same service
 #   version       the tag's version, with the v
 #   prerelease    true for a 0.x version or one with a pre-release suffix
 #
@@ -19,13 +22,17 @@
 #   keywrapping/awskms/vMAJOR.MINOR.PATCH[-suffix]       that nested module
 #   keywrapping/azurekeyvault/vMAJOR.MINOR.PATCH[-suffix] that nested module
 #   keywrapping/googlekms/vMAJOR.MINOR.PATCH[-suffix]    that nested module
+#   keywrapping/hashicorpvault/vMAJOR.MINOR.PATCH[-suffix] that nested module
+#   cache/<store>/vMAJOR.MINOR.PATCH[-suffix]            that nested module: awssecretsmanager,
+#                                                        azurekeyvault, googlesecretmanager or
+#                                                        hashicorpvault
 #   securefile/vMAJOR.MINOR.PATCH[-suffix]               that nested module
 #
 # A nested module is refused while its go.mod still points at the root module (or, for
-# keywrapping/awskms, keywrapping/azurekeyvault and keywrapping/googlekms, at securefile) with a
+# the cloud key wrappers, at securefile) with a
 # replace directive, or requires a placeholder version of it: a consumer would get a module that
 # doesn't build. Remove the replace and require a tagged version first - so the root module, then
-# securefile, before keywrapping/awskms, keywrapping/azurekeyvault and keywrapping/googlekms.
+# securefile, before the cloud key wrappers; the cache modules need only the root module.
 #
 # Usage: scripts/release-tag.sh <tag>
 
@@ -41,11 +48,14 @@ readonly SEMVER='v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z]+(\.[0-9A-Za-z]+)*)?'
 if [[ ${tag} =~ ^${SEMVER}$ ]]; then
     module_dir="."
     artifact="hkdfguard-go"
-elif [[ ${tag} =~ ^(securefile|cryptoprovider/aesgcm256|keywrapping/nativev1|keywrapping/awskms|keywrapping/azurekeyvault|keywrapping/googlekms)/${SEMVER}$ ]]; then
+elif [[ ${tag} =~ ^(securefile|cryptoprovider/aesgcm256|keywrapping/nativev1|keywrapping/awskms|keywrapping/azurekeyvault|keywrapping/googlekms|keywrapping/hashicorpvault)/${SEMVER}$ ]]; then
     module_dir="${BASH_REMATCH[1]}"
     artifact="hkdfguard-go-$(basename "${module_dir}")"
+elif [[ ${tag} =~ ^(cache/(awssecretsmanager|azurekeyvault|googlesecretmanager|hashicorpvault))/${SEMVER}$ ]]; then
+    module_dir="${BASH_REMATCH[1]}"
+    artifact="hkdfguard-go-cache-${BASH_REMATCH[2]}"
 else
-    die "tag '${tag}' is not vMAJOR.MINOR.PATCH (optionally -suffix), on its own or under securefile/, cryptoprovider/aesgcm256/, keywrapping/nativev1/, keywrapping/awskms/, keywrapping/azurekeyvault/ or keywrapping/googlekms/"
+    die "tag '${tag}' is not vMAJOR.MINOR.PATCH (optionally -suffix), on its own or under securefile/, cryptoprovider/aesgcm256/, keywrapping/nativev1/, keywrapping/awskms/, keywrapping/azurekeyvault/, keywrapping/googlekms/, keywrapping/hashicorpvault/ or cache/{awssecretsmanager,azurekeyvault,googlesecretmanager,hashicorpvault}/"
 fi
 version="${tag##*/}"
 

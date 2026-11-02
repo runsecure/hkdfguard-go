@@ -20,6 +20,11 @@
 #   git tag keywrapping/awskms/v0.1.0 && git push origin keywrapping/awskms/v0.1.0
 #   git tag keywrapping/azurekeyvault/v0.1.0 && git push origin keywrapping/azurekeyvault/v0.1.0
 #   git tag keywrapping/googlekms/v0.1.0 && git push origin keywrapping/googlekms/v0.1.0
+#   git tag keywrapping/hashicorpvault/v0.1.0 && git push origin keywrapping/hashicorpvault/v0.1.0
+#   git tag cache/awssecretsmanager/v0.1.0 && git push origin cache/awssecretsmanager/v0.1.0
+#   git tag cache/azurekeyvault/v0.1.0 && git push origin cache/azurekeyvault/v0.1.0
+#   git tag cache/googlesecretmanager/v0.1.0 && git push origin cache/googlesecretmanager/v0.1.0
+#   git tag cache/hashicorpvault/v0.1.0 && git push origin cache/hashicorpvault/v0.1.0
 #   git tag securefile/v0.1.0 && git push origin securefile/v0.1.0
 #
 # Any v0.x.y tag, and any tag with a pre-release suffix (v1.2.0-rc.1), is published as a GitHub
@@ -38,6 +43,11 @@ on:
       - "keywrapping/awskms/v*.*.*"
       - "keywrapping/azurekeyvault/v*.*.*"
       - "keywrapping/googlekms/v*.*.*"
+      - "keywrapping/hashicorpvault/v*.*.*"
+      - "cache/awssecretsmanager/v*.*.*"
+      - "cache/azurekeyvault/v*.*.*"
+      - "cache/googlesecretmanager/v*.*.*"
+      - "cache/hashicorpvault/v*.*.*"
       - "securefile/v*.*.*"
 
 # Least privilege by default; each job asks for exactly what it needs below.
