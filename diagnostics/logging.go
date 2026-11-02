@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"time"
 )
 
 // LevelCritical is the slog level for unrecoverable conditions (the .NET port's LogLevel.Critical).
@@ -16,7 +17,12 @@ const (
 	LogKeyEventName            = "event.name"
 	LogKeyError                = "error"
 	LogKeyRefreshFailurePolicy = "hkdfguard.refresh_failure_policy"
+	LogKeyKeyFilePath          = "hkdfguard.key_file.path"
 )
+
+// isoTimestamp formats a time as JavaScript's Date.toISOString does (UTC, milliseconds), so a
+// message reads the same in every port.
+const isoTimestamp = "2006-01-02T15:04:05.000Z07:00"
 
 // Structured-log helpers shared by every component that accepts an optional *slog.Logger. A nil
 // logger is a no-op, and nothing is formatted when the logger has the level disabled.
@@ -118,6 +124,28 @@ func EncryptionBudgetWarning(ctx context.Context, logger *slog.Logger, encryptio
 		},
 		slog.Int64(string(AttrEncryptionCount), encryptionCount),
 		slog.Int64(string(AttrEncryptionLimit), encryptionLimit))
+}
+
+// KeyFileAgeWarning logs that the current key file is nearing its maximum age, after which it
+// stops encrypting. Logged once per key.
+func KeyFileAgeWarning(ctx context.Context, logger *slog.Logger, keyVersion int, path string, refuseAt time.Time) {
+	logEvent(ctx, logger, slog.LevelWarn, 11, "KeyFileAgeWarning", nil,
+		func() string {
+			return fmt.Sprintf("Key file '%s' (version %d) stops encrypting at %s, when it reaches its maximum age; deploy a new key file at a higher version before then.", path, keyVersion, refuseAt.UTC().Format(isoTimestamp))
+		},
+		slog.Int(string(AttrKeyVersion), keyVersion),
+		slog.String(LogKeyKeyFilePath, path))
+}
+
+// KeyFileExpired logs that the current key file has passed its maximum age and no longer encrypts;
+// decryption under it still works. Logged once per key.
+func KeyFileExpired(ctx context.Context, logger *slog.Logger, keyVersion int, path string) {
+	logEvent(ctx, logger, LevelCritical, 12, "KeyFileExpired", nil,
+		func() string {
+			return fmt.Sprintf("Key file '%s' (version %d) has passed its maximum age and no longer encrypts; values under it still decrypt. Deploy a new key file at a higher version.", path, keyVersion)
+		},
+		slog.Int(string(AttrKeyVersion), keyVersion),
+		slog.String(LogKeyKeyFilePath, path))
 }
 
 // logEvent writes one record when logger is non-nil and has level enabled, building the message

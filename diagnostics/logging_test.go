@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"strings"
 	"testing"
+	"time"
 )
 
 // capturingHandler records every slog record it is handed.
@@ -189,6 +190,35 @@ func TestEncryptionBudgetWarning_WritesAWarnRecordWithCountAndLimit(t *testing.T
 	}
 }
 
+func TestKeyFileAgeWarning_WritesAWarnRecordWithTheVersionPathAndDeadline(t *testing.T) {
+	logger, h := newCapturingLogger(true)
+
+	KeyFileAgeWarning(context.Background(), logger, 3, "/etc/app/key.v3", time.Date(2027, 1, 2, 0, 0, 0, 0, time.UTC))
+
+	r, attrs := single(t, h, slog.LevelWarn, 11)
+	if r.Message != "Key file '/etc/app/key.v3' (version 3) stops encrypting at 2027-01-02T00:00:00.000Z, when it reaches its maximum age; deploy a new key file at a higher version before then." {
+		t.Errorf("message = %q", r.Message)
+	}
+	if attrs[LogKeyEventName].String() != "KeyFileAgeWarning" || attrs[string(AttrKeyVersion)].Int64() != 3 || attrs[LogKeyKeyFilePath].String() != "/etc/app/key.v3" {
+		t.Errorf("attributes = %v", attrs)
+	}
+}
+
+func TestKeyFileExpired_WritesACriticalRecordWithTheVersionAndPath(t *testing.T) {
+	logger, h := newCapturingLogger(true)
+
+	KeyFileExpired(context.Background(), logger, 3, "/etc/app/key.v3")
+
+	r, attrs := single(t, h, LevelCritical, 12)
+	if r.Message != "Key file '/etc/app/key.v3' (version 3) has passed its maximum age and no longer encrypts; values under it still decrypt. Deploy a new key file at a higher version." {
+		t.Errorf("message = %q", r.Message)
+	}
+	if attrs[LogKeyEventName].String() != "KeyFileExpired" || attrs[string(AttrKeyVersion)].Int64() != 3 || attrs[LogKeyKeyFilePath].String() != "/etc/app/key.v3" {
+		t.Errorf("attributes = %v", attrs)
+	}
+	assertError(t, attrs, nil)
+}
+
 func TestLogHelpers_WhenTheLevelIsDisabledOrTheLoggerIsNil_WriteNothing(t *testing.T) {
 	ctx := context.Background()
 	disabled, h := newCapturingLogger(false)
@@ -204,6 +234,8 @@ func TestLogHelpers_WhenTheLevelIsDisabledOrTheLoggerIsNil_WriteNothing(t *testi
 		EphemeralKeyRetired(ctx, logger, 1)
 		EphemeralKeyRetirementFailed(ctx, logger, 1, errors.New("x"))
 		EncryptionBudgetWarning(ctx, logger, 1, 2)
+		KeyFileAgeWarning(ctx, logger, 1, "/k", time.Now())
+		KeyFileExpired(ctx, logger, 1, "/k")
 	}
 
 	if len(h.records) != 0 {

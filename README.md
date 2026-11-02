@@ -113,7 +113,9 @@ secrets := encryptedconfig.New(ring, lookup)
 n, err := secrets.Decrypt(ctx, "ConnectionStrings:Admin", buf)
 ```
 
-A `Reader` is a `ProtectedReadOnlyCache`, so it can join a `cache.Collection`.
+A `Reader` is a `ProtectedReadOnlyCache`, so it can join a `cache.Collection`. `Decrypt` returns 0
+both for a missing key and for a protected empty value; `TryDecrypt` also reports whether the key
+was found, when the two must be told apart.
 
 ### `cryptoprovider/aesgcm256` (separate module)
 
@@ -142,7 +144,8 @@ exits, which suits caches and other in-process data; never persist it.
 
 If an application does encrypt values that must outlive the process under a key file, its
 encryptions under that file are not counted together across instances and restarts. Bound them by
-deploying a new key file at a higher version regularly.
+deploying a new key file at a higher version regularly. `dek.Config.KeyFileMaxAgeDays` (365 days by default) enforces this: a
+current key file stops encrypting at that age, and decryption under it never stops.
 
 ### `keywrapping/nativev1` (separate module)
 
@@ -176,8 +179,8 @@ wrapper, err := nativev1.New("com.example.orders") // service must be provisione
 
 It also reads key files through the native library's `hkdfguard_open_file` (`KeyWrapper.ReadKeyFile`,
 which `dek.Build` uses), so the bytes come back still wrapped after the native checks: the file's
-size and format; that it doesn't hold what looks like an *unwrapped* key (32 raw bytes, or its hex
-or base64 - treat that as a key exposure); and that no account other than an administrator or the
+size and format; that it doesn't hold what looks like an *unwrapped* key (32 raw bytes, optionally
+followed by one line ending (LF or CRLF), or its hex or base64 - treat that as a key exposure); and that no account other than an administrator or the
 reader could have written or replaced it, nor redirected its path through a link, junction, 8.3
 short name or network path. A refusal is a `*nativev1.KeyFileError` naming the file, the status
 and its meaning, matchable with `errors.Is` against `fs.ErrNotExist`, `fs.ErrPermission` or
@@ -407,7 +410,7 @@ through, such as `keywrapping/awskms`, `keywrapping/azurekeyvault` and `keywrapp
   symbolic links a trusted user owns are followed, and the resolved path is opened with
   `O_NOFOLLOW` and must still be a regular file.
 - **Everywhere:** 1 to `hkdfguard.MaxWrappedKeyBytes` bytes, and not what looks like an unwrapped
-  key (32 raw bytes, or its hex or base64).
+  key (32 raw bytes, optionally followed by one line ending (LF or CRLF), or its hex or base64).
 
 `securefile.KeyFileTrust` names who besides administrators is trusted (Windows SIDs, Unix uids and
 gids); its zero value, `securefile.AdministratorsOnly()`, trusts no one else. A refusal is a

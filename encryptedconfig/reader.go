@@ -49,10 +49,21 @@ func New(protectors ProtectorFactory, lookup Lookup) *Reader {
 // number of bytes written, or 0 (and a nil error) if lookup has no value for name. Size result
 // with MaxDecryptedLength.
 //
+// A protected empty value also decrypts to 0 bytes, so 0 alone doesn't say whether name is set: use
+// TryDecrypt when an empty value and a missing one must be told apart.
+//
 // The value must have been encrypted for name, ignoring ASCII case; one written for any other key
 // fails with hkdfguard.ErrAuthenticationFailed, and one that isn't a protected value fails to
 // parse.
 func (r *Reader) Decrypt(ctx context.Context, name string, result []byte) (int, error) {
+	n, _, err := r.TryDecrypt(ctx, name, result)
+	return n, err
+}
+
+// TryDecrypt is Decrypt, also reporting whether lookup has a value for name at all: found is false
+// for a missing value, and true for one that is present - including one that decrypts to 0 bytes,
+// an empty secret. Errors are Decrypt's.
+func (r *Reader) TryDecrypt(ctx context.Context, name string, result []byte) (n int, found bool, err error) {
 	telemetry := diagnostics.EncryptedConfiguration
 	ctx, span := telemetry.Start(ctx, diagnostics.SpanEncryptedConfigurationDecrypt)
 	defer span.End()
@@ -60,17 +71,16 @@ func (r *Reader) Decrypt(ctx context.Context, name string, result []byte) (int, 
 
 	value, ok := r.lookup(name)
 	if !ok {
-		return 0, nil
+		return 0, false, nil
 	}
 	protector, err := r.protectorFor(name)
 	if err == nil {
-		var n int
 		if n, err = protector.Decrypt(ctx, value, result); err == nil {
-			return n, nil
+			return n, true, nil
 		}
 	}
 	diagnostics.RecordError(span, err)
-	return 0, err
+	return 0, true, err
 }
 
 // MaxDecryptedLength is an upper bound on how many bytes Decrypt will write for name; ok is false
