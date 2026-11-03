@@ -59,6 +59,7 @@ jobs:
             cache/azurekeyvault/go.sum
             cache/googlesecretmanager/go.sum
             cache/hashicorpvault/go.sum
+            cache/filepersecret/go.sum
             integration/go.sum
 
       - name: Check every module

@@ -6,7 +6,8 @@
 #   module_dir    the module's directory: ".", securefile, cryptoprovider/aesgcm256,
 #                 keywrapping/nativev1, keywrapping/awskms, keywrapping/azurekeyvault,
 #                 keywrapping/googlekms, keywrapping/hashicorpvault, cache/awssecretsmanager,
-#                 cache/azurekeyvault, cache/googlesecretmanager or cache/hashicorpvault
+#                 cache/azurekeyvault, cache/googlesecretmanager, cache/hashicorpvault or
+#                 cache/filepersecret
 #   module_path   its module path
 #   artifact      the name of its source archive: hkdfguard-go, hkdfguard-go-aesgcm256, ...; a
 #                 cache module's carries "cache-" (hkdfguard-go-cache-azurekeyvault), so it never
@@ -24,8 +25,8 @@
 #   keywrapping/googlekms/vMAJOR.MINOR.PATCH[-suffix]    that nested module
 #   keywrapping/hashicorpvault/vMAJOR.MINOR.PATCH[-suffix] that nested module
 #   cache/<store>/vMAJOR.MINOR.PATCH[-suffix]            that nested module: awssecretsmanager,
-#                                                        azurekeyvault, googlesecretmanager or
-#                                                        hashicorpvault
+#                                                        azurekeyvault, googlesecretmanager,
+#                                                        hashicorpvault or filepersecret
 #   securefile/vMAJOR.MINOR.PATCH[-suffix]               that nested module
 #
 # A nested module is refused while its go.mod requires a placeholder version of the root module or
@@ -51,11 +52,11 @@ if [[ ${tag} =~ ^${SEMVER}$ ]]; then
 elif [[ ${tag} =~ ^(securefile|cryptoprovider/aesgcm256|keywrapping/nativev1|keywrapping/awskms|keywrapping/azurekeyvault|keywrapping/googlekms|keywrapping/hashicorpvault)/${SEMVER}$ ]]; then
     module_dir="${BASH_REMATCH[1]}"
     artifact="hkdfguard-go-$(basename "${module_dir}")"
-elif [[ ${tag} =~ ^(cache/(awssecretsmanager|azurekeyvault|googlesecretmanager|hashicorpvault))/${SEMVER}$ ]]; then
+elif [[ ${tag} =~ ^(cache/(awssecretsmanager|azurekeyvault|googlesecretmanager|hashicorpvault|filepersecret))/${SEMVER}$ ]]; then
     module_dir="${BASH_REMATCH[1]}"
     artifact="hkdfguard-go-cache-${BASH_REMATCH[2]}"
 else
-    die "tag '${tag}' is not vMAJOR.MINOR.PATCH (optionally -suffix), on its own or under securefile/, cryptoprovider/aesgcm256/, keywrapping/nativev1/, keywrapping/awskms/, keywrapping/azurekeyvault/, keywrapping/googlekms/, keywrapping/hashicorpvault/ or cache/{awssecretsmanager,azurekeyvault,googlesecretmanager,hashicorpvault}/"
+    die "tag '${tag}' is not vMAJOR.MINOR.PATCH (optionally -suffix), on its own or under securefile/, cryptoprovider/aesgcm256/, keywrapping/nativev1/, keywrapping/awskms/, keywrapping/azurekeyvault/, keywrapping/googlekms/, keywrapping/hashicorpvault/ or cache/{awssecretsmanager,azurekeyvault,googlesecretmanager,hashicorpvault,filepersecret}/"
 fi
 version="${tag##*/}"
 

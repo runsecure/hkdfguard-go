@@ -5,7 +5,10 @@
 // Java ports.
 //
 // ReadTrustedKeyFile reads; KeyFileTrust says who, besides the operating system's administrators,
-// may have written the file. It runs on Windows, Linux and Apple silicon Macs with no native
+// may have written the file. ReadTrustedFile and ParseTrustedFile read any other file - a secret
+// file, a certificate - from a location held to the same rules, with the same trust, but with none
+// of a key file's rules about its contents: only a length limit the caller sets (the Go port of the
+// .NET TrustedFile). It runs on Windows, Linux and Apple silicon Macs with no native
 // HkdfGuard library installed and without cgo: on Linux and macOS the checks are lstat, readlink,
 // open with O_NOFOLLOW and fstat (golang.org/x/sys/unix); on Windows they are Win32 calls - owner
 // and DACL, reparse points, final path, drive type - made through golang.org/x/sys/windows.
@@ -31,7 +34,8 @@
 //
 // A refusal is a *KeyFileError, matchable with errors.Is against fs.ErrNotExist, fs.ErrPermission
 // (a location that isn't trusted matches both ErrUntrusted and fs.ErrPermission),
-// hkdfguard.ErrInvalidKeyFile or ErrBusy.
+// hkdfguard.ErrInvalidKeyFile (a key file's contents), ErrTooLarge (a trusted file over its limit)
+// or ErrBusy.
 //
 // This module does not depend on, or load, the native KMS library or its loader.
 package securefile

@@ -7,9 +7,9 @@ import (
 	"strings"
 )
 
-// The Linux and macOS key-file location rules, kept free of system calls: they take lstat and
-// readlink as arguments, so the tests run them against simulated filesystems on every platform.
-// read_unix.go wires them to the real calls.
+// The Linux and macOS location rules for a key file - or any file ReadTrustedFile reads - kept free
+// of system calls: they take lstat and readlink as arguments, so the tests run them against
+// simulated filesystems on every platform. read_unix.go wires them to the real calls.
 
 // unixFileType is what kind of file lstat reports.
 type unixFileType int
@@ -154,7 +154,7 @@ func resolveTrusted(path string, trust KeyFileTrust, getStatus unixStatusFunc, r
 		}
 
 		if resolvedType != unixDirectory {
-			return "", keyFileError(fs.ErrNotExist, path, "Key file '%s' runs through '%s', which is not a directory.", path, resolved)
+			return "", keyFileError(fs.ErrNotExist, path, "'%s' runs through '%s', which is not a directory.", path, resolved)
 		}
 
 		if name == ".." {
@@ -172,7 +172,7 @@ func resolveTrusted(path string, trust KeyFileTrust, getStatus unixStatusFunc, r
 			return "", err
 		}
 		if !found {
-			return "", keyFileError(fs.ErrNotExist, path, "Key file '%s' was not found ('%s' does not exist).", path, candidate)
+			return "", keyFileError(fs.ErrNotExist, path, "'%s' was not found ('%s' does not exist).", path, candidate)
 		}
 
 		if status.fileType == unixSymbolicLink {
@@ -235,10 +235,11 @@ func requireTrusted(candidate string, status unixFileStatus, trust KeyFileTrust,
 	return nil
 }
 
-// untrustedUnix is the refusal of a key file whose location isn't trusted.
+// untrustedUnix is the refusal of a file - a key file, or one ReadTrustedFile reads - whose location
+// isn't trusted.
 func untrustedUnix(path, format string, args ...any) *KeyFileError {
 	return keyFileError(ErrUntrusted, path,
-		"Key file '%s' is not trusted: %s. Keep key files where only root (or a trusted deployer, see KeyFileTrust) can write, all the way up from /.",
+		"'%s' is not trusted: %s. Keep it where only root (or a trusted deployer, see KeyFileTrust) can write, all the way up from /.",
 		path, fmt.Sprintf(format, args...))
 }
 

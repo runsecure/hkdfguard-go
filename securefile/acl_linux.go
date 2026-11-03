@@ -21,7 +21,7 @@ func accessACLWriters(path string) ([]aclWriter, error) {
 		case err == nil:
 			writers, parseErr := parsePOSIXAccessACL(buffer[:count])
 			if parseErr != nil {
-				return nil, keyFileError(ErrUntrusted, path, "Key file location '%s' is not trusted: %s.", path, parseErr)
+				return nil, keyFileError(ErrUntrusted, path, "The location '%s' is not trusted: %s.", path, parseErr)
 			}
 			return writers, nil
 		case errors.Is(err, unix.ERANGE) && size < 1<<20:

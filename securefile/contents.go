@@ -1,9 +1,6 @@
 package securefile
 
 import (
-	"errors"
-	"io"
-
 	"github.com/runsecure/hkdfguard-go"
 )
 
@@ -21,26 +18,14 @@ const plaintextTextScanLimit = 96
 // once copied out or refused.
 //
 // read reads into the slice it is given, returning the count; 0 (or io.EOF) at the end. An error it
-// returns is passed on as it is.
-func readContents(read func([]byte) (int, error), path string) ([]byte, error) {
+// returns is passed on as it is. The loop is readAtMost's, which ReadTrustedFile reads through too.
+func readContents(read readFunc, path string) ([]byte, error) {
 	buffer := make([]byte, hkdfguard.MaxWrappedKeyBytes+1)
 	defer hkdfguard.Wipe(buffer)
 
-	total := 0
-	for total < len(buffer) {
-		count, err := read(buffer[total:])
-		if count > 0 {
-			total += count
-		}
-		if errors.Is(err, io.EOF) {
-			break
-		}
-		if err != nil {
-			return nil, err
-		}
-		if count <= 0 {
-			break
-		}
+	total, err := readAtMost(read, buffer)
+	if err != nil {
+		return nil, err
 	}
 
 	if total == 0 {
