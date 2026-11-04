@@ -20,7 +20,8 @@ the [`hkdfguard` tool reference](docs/reference/cli.md), and how to
 
 Go port of `HkdfGuard.Abstractions`: the interfaces every implementation satisfies
 (`KeyWrapper`, `CryptoProviderFactory`/`CryptoProvider`, `DataEncryptionKey`, `KeyRing`,
-`EncryptedFormatProvider`, `DataProtector`, `PipelineDataProtector`, `ProtectedCache`), the shared
+`EncryptedFormatProvider`, `DataProtector`, `PipelineDataProtector`, `SecretPipelineWriter`,
+`ProtectedCache`), the shared
 cross-port rules (`ConfigurationPurpose`/`ConfigurationAAD`, `ValidateServiceName`), limits and
 defaults, and the `Wipe`/`IsZero` secret-memory helpers. Implementation packages import this one
 and never each other, so each can be swapped independently.
@@ -439,6 +440,41 @@ failure is returned as `securefile` reports it. A cached value isn't refreshed: 
 picked up by a new cache. It is its own module because it reads through `securefile`, which depends
 on the root module the `cache` package is in.
 
+### Pipeline writers: `pipeline`, `pipeline/awssecretsmanager`, `pipeline/azurekeyvault`, `pipeline/googlesecretmanager`, `pipeline/hashicorpvault` (separate modules)
+
+Go ports of `HkdfGuard.Pipeline` and its four store writers: the end of a provisioning pipeline,
+before a durable KEK exists. A writer pulls a fixed list of secrets from a secret store, encrypts
+each at once with a `hkdfguard.PipelineDataProtector` (`aesgcm256.NewPipelineDataProtector`) bound
+to its file name, keeps only the ciphertext, and writes one file per secret - the folder layout
+`cache/filepersecret` reads at runtime. No key ring is involved: once the files are written, the
+protector's key (`KeyBase64`) goes to the native platform's wrap process.
+
+```go
+protector, err := aesgcm256.NewPipelineDataProtector(dek.NewDefaultFormatProvider(), 3)
+if err != nil { ... }
+defer protector.Close()
+writer, err := awssecretsmanager.New(secretsmanager.NewFromConfig(cfg), protector,
+	[]string{"prod/app#username", "prod/app#password", "prod/api-key"})
+if err != nil { ... }
+defer writer.Close()
+if err := writer.PullSecrets(ctx); err != nil { ... }
+if err := writer.WriteProtectedSecretFiles(`C:\HkdfGuardSecrets\myapp`); err != nil { ... }
+// Then hand protector.KeyBase64() to the wrap tool, and register the key at version 3.
+```
+
+| Module | Purpose |
+|---|---|
+| `pipeline` | `pipeline.New` returns a `*pipeline.Writer` (a `hkdfguard.SecretPipelineWriter`) over a `pipeline.SecretStore`: it takes secret names - `name` or `name#key` - reads each secret once however many of its keys are listed, encrypts every value bound to its file name (`/` and `#` become `__`, and the name must be one `filepersecret.IsValidName` accepts; two differing only in case are refused), reports every missing value in one `*pipeline.MissingSecretsError` (`pipeline.ErrSecretNotFound`) after keeping the rest, keeps nothing when a read fails otherwise, and writes UTF-8 files without a BOM, replacing only its own. A key's value is a string's text, or a number's, `true`'s or `false`'s JSON text; a JSON object holding a key twice, or a value that isn't UTF-8 text, is refused (`pipeline.ErrInvalidSecretData`). A store supplies only `IsValidName` and `ReadSecret`; `pipeline.ReadBody` reads a response body into a buffer zeroed by the caller. Depends on the root module and `cache/filepersecret` (for its file-name rule). |
+| `pipeline/hashicorpvault` | `New(client, protector, names, options)` over one KV engine, version 1 or 2, through the application's `*api.Client`: `path` or `path#key`, a name without a key reading `Options.DefaultKey` (`"value"`); raw reads parsed straight into zeroed buffers; https only (http and `unix://` on the local host), and the client must set `DisableRedirects` unless `Options.AllowRedirects`. Failures are `*hashicorpvault.Error` (`ErrVault`). |
+| `pipeline/awssecretsmanager` | `New(client, protector, names)` through the application's `*secretsmanager.Client`: `name` for the whole `SecretString`, `name#key` for a member of a key/value secret; a per-call middleware below the deserializer takes the body and hands the SDK `{}`, with response-body logging forced off; a `SecretBinary` is refused. |
+| `pipeline/azurekeyvault` | `New(vaultURL, credential, protector, names, options)` - its own `azsecrets.Client` from a copy of `Options.ClientOptions`: `name` or `name#key`; a per-retry policy reads the unbuffered body and hands the SDK `{}`; options that log bodies are refused. |
+| `pipeline/googlesecretmanager` | `New(client, projectID, protector, names)` through the application's `*secretmanager.Client`: each secret's latest version, its CRC32C and name checked (`ErrInvalidResponse`), the payload encrypted straight from the decoded `[]byte` and zeroed, as are gRPC's receive buffers. |
+
+The store writers never depend on the runtime caches (`cache/...`), and each is its own module so
+that only pipelines that use it depend on that SDK. Missing secrets - not found, an absent key, an
+empty or non-scalar value - are reported, never written; the protector is the caller's and is never
+closed by a writer.
+
 ### `integration/configurationresolver` (separate module): templates resolved from the caches
 
 Go port of the .NET `HkdfGuard.Integration.ConfigurationResolver`, together with the parts of
@@ -588,7 +624,7 @@ there as well: CI names no test keys and holds no AWS, Azure or Google credentia
 write permissions.
 
 A Go module is released by its tag alone: the Go module proxy serves the tagged source, so there
-is nothing to pack, sign or push to a feed. The fourteen published modules share one version and are
+is nothing to pack, sign or push to a feed. The nineteen published modules share one version and are
 tagged together, at the same commit. Before tagging, set every nested module's requirement on the
 root module and on `securefile` to that version (each `go.mod` and `integration/go.mod`), then:
 
@@ -598,7 +634,7 @@ tags=("${version}")
 for module in securefile cryptoprovider/aesgcm256 keywrapping/nativev1 keywrapping/awskms \
     keywrapping/azurekeyvault keywrapping/googlekms keywrapping/hashicorpvault \
     cache/awssecretsmanager cache/azurekeyvault cache/googlesecretmanager cache/hashicorpvault \
-    cache/filepersecret integration/configurationresolver; do
+    cache/filepersecret pipeline pipeline/awssecretsmanager pipeline/azurekeyvault \n    pipeline/googlesecretmanager pipeline/hashicorpvault integration/configurationresolver; do
   tags+=("${module}/${version}")
 done
 for tag in "${tags[@]}"; do git tag "${tag}"; done
