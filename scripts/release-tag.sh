@@ -7,11 +7,14 @@
 #                 keywrapping/nativev1, keywrapping/awskms, keywrapping/azurekeyvault,
 #                 keywrapping/googlekms, keywrapping/hashicorpvault, cache/awssecretsmanager,
 #                 cache/azurekeyvault, cache/googlesecretmanager, cache/hashicorpvault,
-#                 cache/filepersecret or integration/configurationresolver
+#                 cache/filepersecret, pipeline, pipeline/awssecretsmanager,
+#                 pipeline/azurekeyvault, pipeline/googlesecretmanager, pipeline/hashicorpvault or
+#                 integration/configurationresolver
 #   module_path   its module path
 #   artifact      the name of its source archive: hkdfguard-go, hkdfguard-go-aesgcm256, ...; a
 #                 cache module's carries "cache-" (hkdfguard-go-cache-azurekeyvault), so it never
-#                 shares a name with the key wrapper for the same service, and
+#                 shares a name with the key wrapper for the same service, a pipeline module's is
+#                 hkdfguard-go-pipeline or carries "pipeline-" (hkdfguard-go-pipeline-azurekeyvault), and
 #                 integration/configurationresolver's is hkdfguard-go-integration-configurationresolver
 #   version       the tag's version, with the v
 #   prerelease    true for a 0.x version or one with a pre-release suffix
@@ -28,6 +31,10 @@
 #   cache/<store>/vMAJOR.MINOR.PATCH[-suffix]            that nested module: awssecretsmanager,
 #                                                        azurekeyvault, googlesecretmanager,
 #                                                        hashicorpvault or filepersecret
+#   pipeline/vMAJOR.MINOR.PATCH[-suffix]                 that nested module
+#   pipeline/<store>/vMAJOR.MINOR.PATCH[-suffix]         that nested module: awssecretsmanager,
+#                                                        azurekeyvault, googlesecretmanager or
+#                                                        hashicorpvault
 #   integration/configurationresolver/vMAJOR.MINOR.PATCH[-suffix] that nested module
 #   securefile/vMAJOR.MINOR.PATCH[-suffix]               that nested module
 #
@@ -57,11 +64,14 @@ elif [[ ${tag} =~ ^(securefile|cryptoprovider/aesgcm256|keywrapping/nativev1|key
 elif [[ ${tag} =~ ^(cache/(awssecretsmanager|azurekeyvault|googlesecretmanager|hashicorpvault|filepersecret))/${SEMVER}$ ]]; then
     module_dir="${BASH_REMATCH[1]}"
     artifact="hkdfguard-go-cache-${BASH_REMATCH[2]}"
+elif [[ ${tag} =~ ^(pipeline(/(awssecretsmanager|azurekeyvault|googlesecretmanager|hashicorpvault))?)/${SEMVER}$ ]]; then
+    module_dir="${BASH_REMATCH[1]}"
+    artifact="hkdfguard-go-${module_dir//\//-}"
 elif [[ ${tag} =~ ^(integration/configurationresolver)/${SEMVER}$ ]]; then
     module_dir="${BASH_REMATCH[1]}"
     artifact="hkdfguard-go-integration-configurationresolver"
 else
-    die "tag '${tag}' is not vMAJOR.MINOR.PATCH (optionally -suffix), on its own or under securefile/, cryptoprovider/aesgcm256/, keywrapping/nativev1/, keywrapping/awskms/, keywrapping/azurekeyvault/, keywrapping/googlekms/, keywrapping/hashicorpvault/, cache/{awssecretsmanager,azurekeyvault,googlesecretmanager,hashicorpvault,filepersecret}/ or integration/configurationresolver/"
+    die "tag '${tag}' is not vMAJOR.MINOR.PATCH (optionally -suffix), on its own or under securefile/, cryptoprovider/aesgcm256/, keywrapping/nativev1/, keywrapping/awskms/, keywrapping/azurekeyvault/, keywrapping/googlekms/, keywrapping/hashicorpvault/, cache/{awssecretsmanager,azurekeyvault,googlesecretmanager,hashicorpvault,filepersecret}/, pipeline/, pipeline/{awssecretsmanager,azurekeyvault,googlesecretmanager,hashicorpvault}/ or integration/configurationresolver/"
 fi
 version="${tag##*/}"
 

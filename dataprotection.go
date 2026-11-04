@@ -129,3 +129,34 @@ type PipelineDataProtector interface {
 	// which process listings and logs capture.
 	KeyBase64() []byte
 }
+
+// SecretPipelineWriter is the end of a provisioning pipeline that delivers secrets from a secret
+// store as one encrypted file per secret - the folder layout cache/filepersecret reads at runtime -
+// before a durable KEK exists. An implementation is given the secrets to pull and a
+// PipelineDataProtector when it is created; PullSecrets reads each secret and encrypts it at once,
+// bound to its file name, keeping only the encrypted value; WriteProtectedSecretFiles then writes
+// one file per secret. No key ring is involved: the protector's key is the only one, and it is
+// handed to the native platform's wrap process once the files are written.
+//
+// The protector belongs to the caller and is never closed by the writer. Closing the writer
+// releases whatever connection to the secret store it owns.
+type SecretPipelineWriter interface {
+	io.Closer
+
+	// ProtectedSecrets is every secret pulled, by file name: its value encrypted by the protector
+	// and formatted, as its file will hold it. Empty until PullSecrets completes. The map is a copy:
+	// changing it changes nothing in the writer.
+	ProtectedSecrets() map[string]string
+
+	// PullSecrets reads every secret the writer was created with and encrypts each value, keeping it
+	// in ProtectedSecrets - replacing whatever an earlier pull kept. ctx cancels the reads. A secret
+	// with no value is reported with an error once every other secret has been kept; any other
+	// failure keeps nothing.
+	PullSecrets(ctx context.Context) error
+
+	// WriteProtectedSecretFiles writes every secret in ProtectedSecrets as a file in folderPath -
+	// absolute or relative to the working directory - creating the folder if it doesn't exist: the
+	// file named for it, holding its encrypted, formatted value as UTF-8. It fails when folderPath is
+	// empty or no pull has completed.
+	WriteProtectedSecretFiles(folderPath string) error
+}

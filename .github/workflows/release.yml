@@ -27,6 +27,11 @@
 #   git tag cache/googlesecretmanager/v0.1.0 && git push origin cache/googlesecretmanager/v0.1.0
 #   git tag cache/hashicorpvault/v0.1.0 && git push origin cache/hashicorpvault/v0.1.0
 #   git tag cache/filepersecret/v0.1.0 && git push origin cache/filepersecret/v0.1.0
+#   git tag pipeline/v0.1.0 && git push origin pipeline/v0.1.0
+#   git tag pipeline/awssecretsmanager/v0.1.0 && git push origin pipeline/awssecretsmanager/v0.1.0
+#   git tag pipeline/azurekeyvault/v0.1.0 && git push origin pipeline/azurekeyvault/v0.1.0
+#   git tag pipeline/googlesecretmanager/v0.1.0 && git push origin pipeline/googlesecretmanager/v0.1.0
+#   git tag pipeline/hashicorpvault/v0.1.0 && git push origin pipeline/hashicorpvault/v0.1.0
 #   git tag integration/configurationresolver/v0.1.0 && git push origin integration/configurationresolver/v0.1.0
 #   git tag securefile/v0.1.0 && git push origin securefile/v0.1.0
 #
@@ -52,6 +57,11 @@ on:
       - "cache/googlesecretmanager/v*.*.*"
       - "cache/hashicorpvault/v*.*.*"
       - "cache/filepersecret/v*.*.*"
+      - "pipeline/v*.*.*"
+      - "pipeline/awssecretsmanager/v*.*.*"
+      - "pipeline/azurekeyvault/v*.*.*"
+      - "pipeline/googlesecretmanager/v*.*.*"
+      - "pipeline/hashicorpvault/v*.*.*"
       - "integration/configurationresolver/v*.*.*"
       - "securefile/v*.*.*"
 

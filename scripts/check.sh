@@ -54,7 +54,7 @@ cd "$(dirname "$0")/.."
 # Pinned, so a CI run is reproducible; the Go module proxy and checksum database verify it.
 readonly GOVULNCHECK_VERSION="v1.9.0"
 
-readonly ALL_MODULES=(. securefile cryptoprovider/aesgcm256 keywrapping/nativev1 keywrapping/awskms keywrapping/azurekeyvault keywrapping/googlekms keywrapping/hashicorpvault cache/awssecretsmanager cache/azurekeyvault cache/googlesecretmanager cache/hashicorpvault cache/filepersecret integration/configurationresolver integration)
+readonly ALL_MODULES=(. securefile cryptoprovider/aesgcm256 keywrapping/nativev1 keywrapping/awskms keywrapping/azurekeyvault keywrapping/googlekms keywrapping/hashicorpvault cache/awssecretsmanager cache/azurekeyvault cache/googlesecretmanager cache/hashicorpvault cache/filepersecret pipeline pipeline/awssecretsmanager pipeline/azurekeyvault pipeline/googlesecretmanager pipeline/hashicorpvault integration/configurationresolver integration)
 modules=("$@")
 [[ ${#modules[@]} -gt 0 ]] || modules=("${ALL_MODULES[@]}")
 
