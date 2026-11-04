@@ -503,6 +503,98 @@ lookup, from those same sources, and keeps the result encrypted under the key ri
 `Invalidate` or `Clear`. See
 [Resolve configuration templates from protected caches](docs/how-to/resolve-configuration-templates.md).
 
+### `options/certificate` (separate module): a certificate and its key from configuration
+
+Go port of `HkdfGuard.Options.Certificate`: `certificate.Options` is a plain-data description of
+where one certificate and its private key are opened from - exactly one of a Windows certificate
+store or a macOS keychain (a `StoreLocation`, a `StoreName` and the certificate's subject
+distinguished name), an OpenSSL 3 provider on Linux (kept for configuration parity; see below), or
+a PKCS#12 or PEM file. Its JSON names are the .NET configuration keys, so the same configuration
+binds. A file's key must be password-protected, and the password is never in the options:
+`PasswordSecretName` names the secret it is read from, unless `AllowUnprotectedPrivateKey` is set
+for development. `certificate.Validator` refuses a native source on another operating system, a
+subject that isn't a distinguished name, a relative path and an unprotected key file, listing every
+failure in one `*certificate.ValidationError` (`certificate.ErrInvalidOptions`).
+
+```go
+loader := certificate.NewLoader(secrets, certificate.LoaderOptions{}) // secrets: any hkdfguard.ProtectedReadOnlyCache
+cert, err := loader.LoadContext(ctx, &certificate.Options{
+	Windows: &certificate.StoreOptions{StoreLocation: certificate.LocalMachine, Subject: "CN=api.example.com"},
+}, "tls")
+if err != nil { ... }
+defer cert.Close()
+tlsConfig := &tls.Config{Certificates: []tls.Certificate{cert.TLSCertificate()}}
+```
+
+`Loader.Load`/`LoadContext` validate the options and open a `*certificate.Certificate`: `Leaf()`,
+the DER chain its source gave, and a `crypto.Signer` (a `crypto.Decrypter` too, for RSA) that
+fails with `certificate.ErrClosed` once the certificate is closed; `TLSCertificate()` is all three
+as `crypto/tls` takes them. From a store, the certificate with that subject - compared whole and
+decoded, ignoring case, never as a substring - that is valid now (with its private key, when
+required) and expires last; every other is released. A certificate that isn't valid now, or lacks a
+required key, is refused (`ErrNotValidNow`, `ErrNoPrivateKey`, `ErrNotFound` for a store). The
+clock is `LoaderOptions.Now`.
+
+- **Windows store:** `CertOpenStore` (system store, read-only, existing only) and
+  `CryptAcquireCertificatePrivateKey` with CNG alone, through `golang.org/x/sys/windows`, with no
+  cgo. The key is never exported: every signature is an `NCryptSignHash` call (RSA PKCS #1 v1.5 and
+  PSS, ECDSA, its IEEE P1363 signature converted to ASN.1) and every decryption an `NCryptDecrypt`
+  call (PKCS #1 v1.5, OAEP), through a lazily loaded `ncrypt.dll`; `Close` frees the key and
+  certificate handles. A key only a legacy CryptoAPI provider holds is refused.
+- **macOS keychain:** the Security framework through cgo, as `keywrapping/nativev1` reaches native
+  code on darwin: `SecItemCopyMatching` for `kSecClassIdentity` (and certificates without keys),
+  restricted to one keychain - CurrentUser the login keychain, LocalMachine the System keychain -
+  and `SecKeyCreateSignature` behind the `crypto.Signer` (RSA PKCS #1 v1.5 and PSS with a salt the
+  hash's length, ECDSA). Only `StoreName` My is a keychain. Without cgo the macOS store is refused
+  (`ErrUnsupported`).
+- **Linux OpenSSL provider:** Go has no OpenSSL binding, so a provider key can't be opened: the
+  validator refuses `Linux` with a required key, saying so, and with `RequirePrivateKey` false only
+  the certificate file is read. Use a `File` source, or a store on Windows or macOS, for a key.
+- **Files:** a PKCS#12 file or a PEM certificate with an encrypted PKCS#8 key. The password is
+  decrypted from the `hkdfguard.ProtectedReadOnlyCache` into a `[]byte` wiped as soon as the key is
+  read. The PKCS#12 and PBES2 decryption is the module's own, on the standard library - the
+  libraries take the password as a string, which can't be wiped: PBES2 (PBKDF2 with HMAC-SHA-1/2,
+  AES-CBC or 3DES-CBC), PKCS#12's own 3DES, HMAC-SHA-1/2 integrity MACs, and BER as well as DER -
+  what OpenSSL 3, .NET and Windows write. Legacy RC2/RC4 files (`openssl -legacy`), public-key
+  PKCS#12 contents and the PBMAC1 MAC are refused with `ErrUnsupported`. A file key is wiped on
+  `Close` as far as Go lets it be reached: `crypto/rsa` and `crypto/ecdsa` keep precomputed copies
+  of their own until the garbage collector frees them.
+
+The real-store tests run on Windows against CurrentUser\My - read-only always, and, with
+`HKDFGUARD_TEST_WINDOWS_CERT_STORE=1`, round trips through throwaway certificates
+`New-SelfSignedCertificate` makes (with non-exportable CNG keys) and removes. On macOS,
+`HKDFGUARD_TEST_MACOS_KEYCHAIN=1` imports and deletes throwaway identities in the login keychain.
+Depends on the root module and `golang.org/x/sys`.
+
+### `systemdcredentials` (separate module): Linux credentials through systemd
+
+Go port of `HkdfGuard.SystemdCredentials`. Linux only: `systemdcredentials.New` refuses anywhere
+else (`ErrUnsupportedPlatform`). `Credentials` runs `systemd-creds` by absolute path, with its
+arguments as an argument list, never through a shell: `Encrypt` writes the plaintext to its stdin
+and has it write the encrypted credential file, bound to its name and to the host key, the TPM or
+both (`systemdcredentials.Key`); `Decrypt` reads the value from its stdout into a `*Credential` -
+a buffer that grows as it is read, wiping each smaller one it drops, up to systemd's 1 MiB limit,
+and wiped on `Close`. A run that outlasts `Options.Timeout` (30 seconds by default), or whose
+context is cancelled, is killed with its whole process group. `ReadLoadedCredential` reads a
+credential systemd decrypted for the service (`LoadCredentialEncrypted=`) from its in-memory
+credentials directory under /run. `systemdcredentials.Source` is a
+`hkdfguard.ProtectedReadOnlyCache` over both - loaded credentials first, then encrypted files - for
+`options/certificate`'s password, say:
+
+```go
+credentials, err := systemdcredentials.New(systemdcredentials.Options{})
+passwords, err := systemdcredentials.NewSource(credentials,
+	map[string]string{"tls-password": "/etc/credstore.encrypted/tls-password.cred"}, "")
+loader := certificate.NewLoader(passwords, certificate.LoaderOptions{})
+```
+
+A name is 1-255 ASCII letters, digits, `.`, `_` and `-`, not `.` or `..` and not starting with `-`
+(`systemdcredentials.IsValidName`). Decrypting a system credential directly needs root (the host
+key) or TPM access; an unprivileged service uses `LoadCredentialEncrypted=` or `--user` credentials
+(`Options.UserScope`, systemd 256+). The unit tests run a fake `systemd-creds`, and the process
+runner against the test binary itself, on any OS; the real `systemd-creds` round trip runs on Linux
+when `HKDFGUARD_TEST_SYSTEMD_CREDS` is 1. Depends on the root module only.
+
 ### `securefile` (separate module)
 
 Go port of `HkdfGuard.SecureFile`: `securefile.ReadTrustedKeyFile` reads a wrapped-key file only
@@ -547,7 +639,8 @@ a module of its own so the published modules never depend on each other; it is n
 
 Every package has tests beside it. `scripts/check.sh` runs what CI runs - formatting, tidy module
 files, vet, build, every module's tests under the race detector, govulncheck, and a type-check of
-`keywrapping/nativev1` and `securefile` for every platform - from any host:
+`keywrapping/nativev1`, `securefile`, `options/certificate` and `systemdcredentials` for every
+platform - from any host:
 
 ```sh
 scripts/check.sh                       # every module
@@ -620,11 +713,14 @@ Ubuntu, macOS (Apple silicon) and Windows. GitHub's runners have no HkdfGuard na
 the native round trips are reported as skipped there; a self-hosted runner with a provisioned test
 service runs them too. The real-KMS tests in `keywrapping/awskms`, the real-Key Vault tests in
 `keywrapping/azurekeyvault` and the real-Cloud KMS tests in `keywrapping/googlekms` are skipped
-there as well: CI names no test keys and holds no AWS, Azure or Google credentials. No secrets, no
-write permissions.
+there as well: CI names no test keys and holds no AWS, Azure or Google credentials. So are
+`options/certificate`'s real-store and real-keychain round trips and `systemdcredentials`' real
+`systemd-creds` round trip, which would change the runner's certificate store, keychain or
+credentials: each runs only when its `HKDFGUARD_TEST_*` variable asks. No secrets, no write
+permissions.
 
 A Go module is released by its tag alone: the Go module proxy serves the tagged source, so there
-is nothing to pack, sign or push to a feed. The nineteen published modules share one version and are
+is nothing to pack, sign or push to a feed. The twenty-one published modules share one version and are
 tagged together, at the same commit. Before tagging, set every nested module's requirement on the
 root module and on `securefile` to that version (each `go.mod` and `integration/go.mod`), then:
 
@@ -634,7 +730,9 @@ tags=("${version}")
 for module in securefile cryptoprovider/aesgcm256 keywrapping/nativev1 keywrapping/awskms \
     keywrapping/azurekeyvault keywrapping/googlekms keywrapping/hashicorpvault \
     cache/awssecretsmanager cache/azurekeyvault cache/googlesecretmanager cache/hashicorpvault \
-    cache/filepersecret pipeline pipeline/awssecretsmanager pipeline/azurekeyvault \n    pipeline/googlesecretmanager pipeline/hashicorpvault integration/configurationresolver; do
+    cache/filepersecret pipeline pipeline/awssecretsmanager pipeline/azurekeyvault \
+    pipeline/googlesecretmanager pipeline/hashicorpvault integration/configurationresolver \
+    options/certificate systemdcredentials; do
   tags+=("${module}/${version}")
 done
 for tag in "${tags[@]}"; do git tag "${tag}"; done

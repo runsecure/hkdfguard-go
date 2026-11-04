@@ -33,6 +33,8 @@
 #   git tag pipeline/googlesecretmanager/v0.1.0 && git push origin pipeline/googlesecretmanager/v0.1.0
 #   git tag pipeline/hashicorpvault/v0.1.0 && git push origin pipeline/hashicorpvault/v0.1.0
 #   git tag integration/configurationresolver/v0.1.0 && git push origin integration/configurationresolver/v0.1.0
+#   git tag options/certificate/v0.1.0 && git push origin options/certificate/v0.1.0
+#   git tag systemdcredentials/v0.1.0 && git push origin systemdcredentials/v0.1.0
 #   git tag securefile/v0.1.0 && git push origin securefile/v0.1.0
 #
 # Any v0.x.y tag, and any tag with a pre-release suffix (v1.2.0-rc.1), is published as a GitHub
@@ -63,6 +65,8 @@ on:
       - "pipeline/googlesecretmanager/v*.*.*"
       - "pipeline/hashicorpvault/v*.*.*"
       - "integration/configurationresolver/v*.*.*"
+      - "options/certificate/v*.*.*"
+      - "systemdcredentials/v*.*.*"
       - "securefile/v*.*.*"
 
 # Least privilege by default; each job asks for exactly what it needs below.
