@@ -6,12 +6,13 @@
 #   module_dir    the module's directory: ".", securefile, cryptoprovider/aesgcm256,
 #                 keywrapping/nativev1, keywrapping/awskms, keywrapping/azurekeyvault,
 #                 keywrapping/googlekms, keywrapping/hashicorpvault, cache/awssecretsmanager,
-#                 cache/azurekeyvault, cache/googlesecretmanager, cache/hashicorpvault or
-#                 cache/filepersecret
+#                 cache/azurekeyvault, cache/googlesecretmanager, cache/hashicorpvault,
+#                 cache/filepersecret or integration/configurationresolver
 #   module_path   its module path
 #   artifact      the name of its source archive: hkdfguard-go, hkdfguard-go-aesgcm256, ...; a
 #                 cache module's carries "cache-" (hkdfguard-go-cache-azurekeyvault), so it never
-#                 shares a name with the key wrapper for the same service
+#                 shares a name with the key wrapper for the same service, and
+#                 integration/configurationresolver's is hkdfguard-go-integration-configurationresolver
 #   version       the tag's version, with the v
 #   prerelease    true for a 0.x version or one with a pre-release suffix
 #
@@ -27,6 +28,7 @@
 #   cache/<store>/vMAJOR.MINOR.PATCH[-suffix]            that nested module: awssecretsmanager,
 #                                                        azurekeyvault, googlesecretmanager,
 #                                                        hashicorpvault or filepersecret
+#   integration/configurationresolver/vMAJOR.MINOR.PATCH[-suffix] that nested module
 #   securefile/vMAJOR.MINOR.PATCH[-suffix]               that nested module
 #
 # A nested module is refused while its go.mod requires a placeholder version of the root module or
@@ -55,8 +57,11 @@ elif [[ ${tag} =~ ^(securefile|cryptoprovider/aesgcm256|keywrapping/nativev1|key
 elif [[ ${tag} =~ ^(cache/(awssecretsmanager|azurekeyvault|googlesecretmanager|hashicorpvault|filepersecret))/${SEMVER}$ ]]; then
     module_dir="${BASH_REMATCH[1]}"
     artifact="hkdfguard-go-cache-${BASH_REMATCH[2]}"
+elif [[ ${tag} =~ ^(integration/configurationresolver)/${SEMVER}$ ]]; then
+    module_dir="${BASH_REMATCH[1]}"
+    artifact="hkdfguard-go-integration-configurationresolver"
 else
-    die "tag '${tag}' is not vMAJOR.MINOR.PATCH (optionally -suffix), on its own or under securefile/, cryptoprovider/aesgcm256/, keywrapping/nativev1/, keywrapping/awskms/, keywrapping/azurekeyvault/, keywrapping/googlekms/, keywrapping/hashicorpvault/ or cache/{awssecretsmanager,azurekeyvault,googlesecretmanager,hashicorpvault,filepersecret}/"
+    die "tag '${tag}' is not vMAJOR.MINOR.PATCH (optionally -suffix), on its own or under securefile/, cryptoprovider/aesgcm256/, keywrapping/nativev1/, keywrapping/awskms/, keywrapping/azurekeyvault/, keywrapping/googlekms/, keywrapping/hashicorpvault/, cache/{awssecretsmanager,azurekeyvault,googlesecretmanager,hashicorpvault,filepersecret}/ or integration/configurationresolver/"
 fi
 version="${tag##*/}"
 

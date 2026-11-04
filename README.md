@@ -439,6 +439,34 @@ failure is returned as `securefile` reports it. A cached value isn't refreshed: 
 picked up by a new cache. It is its own module because it reads through `securefile`, which depends
 on the root module the `cache` package is in.
 
+### `integration/configurationresolver` (separate module): templates resolved from the caches
+
+Go port of the .NET `HkdfGuard.Integration.ConfigurationResolver`, together with the parts of
+[ConfigurationResolver](https://github.com/runsecure/configurationresolver-dotnet) it uses - the
+token, the reader, the resolver and the value-provider contract - in one package, depending only
+on the root module. It fills the `${name}` items in a template, such as a connection string, with
+secrets from any `ProtectedReadOnlyCache`:
+
+```go
+token := configurationresolver.NewDefaultToken() // "${", "}", and "$" escapes: "$${x}" is "${x}"
+reader, _ := configurationresolver.NewConfigurationItemReader(token)
+reader.ReadKeysString(template) // only the keys of this trusted template may be resolved
+
+resolver, err := configurationresolver.NewConfigurationResolverBuilder().
+	WithToken(token).
+	WithReader(reader).
+	AddProtectedCache(secrets). // a cache.Cache, a cache.Collection, a remote cache, ...
+	Build()
+n, err := resolver.Resolve(ctx, []byte(template), destination) // destination wiped on failure
+```
+
+Each value is decrypted straight into the destination, or through a scratch buffer that is wiped,
+and never becomes a Go string. `configurationresolver.NewResolvingProtectedCacheCollection` is a
+`ProtectedReadOnlyCache` over several sources that resolves a value holding items on its first
+lookup, from those same sources, and keeps the result encrypted under the key ring until
+`Invalidate` or `Clear`. See
+[Resolve configuration templates from protected caches](docs/how-to/resolve-configuration-templates.md).
+
 ### `securefile` (separate module)
 
 Go port of `HkdfGuard.SecureFile`: `securefile.ReadTrustedKeyFile` reads a wrapped-key file only
@@ -477,6 +505,7 @@ native KEK wrapping its key, an application reading it back - the port of the .N
 `NativeEndToEndTests`, and the same paths through `keywrapping/awskms`, `keywrapping/azurekeyvault`
 and `keywrapping/googlekms` against in-process stand-ins for AWS KMS, Key Vault and Cloud KMS. It is
 a module of its own so the published modules never depend on each other; it is never tagged.
+`integration/configurationresolver`, inside its folder, is a separate, published module.
 
 ## Testing
 
@@ -559,7 +588,7 @@ there as well: CI names no test keys and holds no AWS, Azure or Google credentia
 write permissions.
 
 A Go module is released by its tag alone: the Go module proxy serves the tagged source, so there
-is nothing to pack, sign or push to a feed. The thirteen published modules share one version and are
+is nothing to pack, sign or push to a feed. The fourteen published modules share one version and are
 tagged together, at the same commit. Before tagging, set every nested module's requirement on the
 root module and on `securefile` to that version (each `go.mod` and `integration/go.mod`), then:
 
@@ -569,7 +598,7 @@ tags=("${version}")
 for module in securefile cryptoprovider/aesgcm256 keywrapping/nativev1 keywrapping/awskms \
     keywrapping/azurekeyvault keywrapping/googlekms keywrapping/hashicorpvault \
     cache/awssecretsmanager cache/azurekeyvault cache/googlesecretmanager cache/hashicorpvault \
-    cache/filepersecret; do
+    cache/filepersecret integration/configurationresolver; do
   tags+=("${module}/${version}")
 done
 for tag in "${tags[@]}"; do git tag "${tag}"; done
