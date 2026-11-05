@@ -1,13 +1,18 @@
 package pipeline
 
 import (
+	"archive/tar"
+	"bytes"
 	"context"
+	"encoding/json"
 	"io"
 	"maps"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/runsecure/hkdfguard-go"
 	"github.com/runsecure/hkdfguard-go/cache/filepersecret"
@@ -205,8 +210,8 @@ func (w *Writer) WriteProtectedSecretFiles(folderPath string) error {
 	if folderPath == "" {
 		return invalidArgument("a folder path is required")
 	}
-	if !w.pulled {
-		return ErrNotPulled
+	if err := w.requirePulled(); err != nil {
+		return err
 	}
 	folder, err := filepath.Abs(folderPath)
 	if err != nil {
@@ -221,6 +226,182 @@ func (w *Writer) WriteProtectedSecretFiles(folderPath string) error {
 		}
 	}
 	return nil
+}
+
+// WriteJSONSecrets writes every secret in ProtectedSecrets to one JSON file at filePath - absolute
+// or relative to the working directory - creating its folder if it doesn't exist: a single object
+// with a member per secret, its file name mapped to its encrypted, formatted value, in ordinal
+// file-name order, as UTF-8 without a byte order mark - the file cache/jsonsecretsfile reads. Each
+// value is bound to its member's name, as it is to its file name in WriteProtectedSecretFiles. A
+// file already there is replaced.
+//
+// The layout is the .NET port's, byte for byte: indented by two spaces, a space after each colon,
+// no line ending after the closing brace, and - as .NET's Utf8JsonWriter writes it - lines ending
+// "\r\n" on Windows and "\n" elsewhere. Nothing is escaped that needn't be: '+', '<', '>' and '&'
+// are written as they are.
+//
+// A folder made here is given mode 0755 and the file 0644, less the umask; a file that already
+// exists keeps its own. It fails with ErrInvalidArgument when filePath is empty, and with
+// ErrNotPulled when no pull has completed; and as the filesystem does.
+func (w *Writer) WriteJSONSecrets(filePath string) error {
+	if filePath == "" {
+		return invalidArgument("a file path is required")
+	}
+	if err := w.requirePulled(); err != nil {
+		return err
+	}
+	path, err := filepath.Abs(filePath)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), folderMode); err != nil {
+		return err
+	}
+	return os.WriteFile(path, w.jsonSecrets(), fileMode)
+}
+
+// WriteJSONSecretsTo writes every secret in ProtectedSecrets to destination as the JSON object
+// WriteJSONSecrets would write, byte for byte - for a remote command to store, e.g. the stdin of
+// "ssh -T host sudo -n tee /etc/app/secrets.json". destination is flushed, when it has a
+// Flush() error method, and left open: close it afterwards, so the remote command sees the end of
+// its input.
+//
+// It fails with ErrInvalidArgument when destination is nil, with ErrNotPulled when no pull has
+// completed, with ctx's error when ctx has ended (nothing is written), and with the error the
+// write or flush returns.
+func (w *Writer) WriteJSONSecretsTo(ctx context.Context, destination io.Writer) error {
+	if err := w.checkDestination(ctx, destination); err != nil {
+		return err
+	}
+	if _, err := destination.Write(w.jsonSecrets()); err != nil {
+		return err
+	}
+	return flush(destination)
+}
+
+// WriteProtectedSecretFilesTo writes every secret in ProtectedSecrets to destination as a tar
+// archive of the files WriteProtectedSecretFiles would write - for a remote tar to unpack, e.g. the
+// stdin of "ssh -T host sudo -n tar -x --no-same-owner -f - -C folder". The archive is PAX, which
+// GNU tar and bsdtar (macOS, and Windows' tar.exe) both read: one regular file per secret, in
+// ordinal file-name order, mode 0644 and modified now - the values are encrypted, and only who may
+// write them matters to cache/filepersecret; with --no-same-owner they belong to whoever unpacks
+// them. destination is flushed, when it has a Flush() error method, and left open: close it
+// afterwards, so tar sees the end of its input.
+//
+// It fails with ErrInvalidArgument when destination is nil, with ErrNotPulled when no pull has
+// completed, with ctx's error when ctx ends before the archive is written (every write checks it,
+// so part of the archive may have been written), and with the error a write or the flush returns.
+func (w *Writer) WriteProtectedSecretFilesTo(ctx context.Context, destination io.Writer) error {
+	if err := w.checkDestination(ctx, destination); err != nil {
+		return err
+	}
+	modified := time.Now().UTC()
+	archive := tar.NewWriter(contextWriter{ctx: ctx, w: destination})
+	for _, fileName := range slices.Sorted(maps.Keys(w.protected)) {
+		value := w.protected[fileName]
+		header := &tar.Header{
+			Typeflag: tar.TypeReg,
+			Name:     fileName,
+			Mode:     fileMode,
+			Size:     int64(len(value)),
+			ModTime:  modified,
+			Format:   tar.FormatPAX,
+		}
+		if err := archive.WriteHeader(header); err != nil {
+			return err
+		}
+		if _, err := io.WriteString(archive, value); err != nil {
+			return err
+		}
+	}
+	// Writes the archive's end; destination is never closed.
+	if err := archive.Close(); err != nil {
+		return err
+	}
+	return flush(destination)
+}
+
+// jsonNewLine is what .NET's Utf8JsonWriter ends each line with when indenting: Environment.NewLine.
+var jsonNewLine = newLineFor(runtime.GOOS)
+
+func newLineFor(goos string) string {
+	if goos == "windows" {
+		return "\r\n"
+	}
+	return "\n"
+}
+
+// jsonSecrets is the secrets object, laid out as .NET's Utf8JsonWriter writes it indented with
+// relaxed escaping: "{}" when there are none.
+func (w *Writer) jsonSecrets() []byte {
+	if len(w.protected) == 0 {
+		return []byte("{}")
+	}
+	var out bytes.Buffer
+	out.WriteByte('{')
+	for i, fileName := range slices.Sorted(maps.Keys(w.protected)) {
+		if i > 0 {
+			out.WriteByte(',')
+		}
+		out.WriteString(jsonNewLine + "  ")
+		writeJSONString(&out, fileName)
+		out.WriteString(": ")
+		writeJSONString(&out, w.protected[fileName])
+	}
+	out.WriteString(jsonNewLine + "}")
+	return out.Bytes()
+}
+
+// writeJSONString writes s as a JSON string. The values are formatted ciphertext (base64) and the
+// names [A-Za-z0-9._-], so nothing in them needs escaping; HTML escaping is off, so '+', '<', '>'
+// and '&' are written as they are, as .NET's relaxed escaping writes them. A string always
+// encodes, so the encoder can't fail.
+func writeJSONString(out *bytes.Buffer, s string) {
+	encoder := json.NewEncoder(out)
+	encoder.SetEscapeHTML(false)
+	_ = encoder.Encode(s)
+	out.Truncate(out.Len() - 1) // Encode ends the value with a newline
+}
+
+// checkDestination is the To methods' shared refusal, before anything is written: a nil
+// destination, no completed pull, or an ended ctx.
+func (w *Writer) checkDestination(ctx context.Context, destination io.Writer) error {
+	if destination == nil {
+		return invalidArgument("a destination is required")
+	}
+	if err := w.requirePulled(); err != nil {
+		return err
+	}
+	return ctx.Err()
+}
+
+// requirePulled fails with ErrNotPulled until a pull has completed.
+func (w *Writer) requirePulled() error {
+	if !w.pulled {
+		return ErrNotPulled
+	}
+	return nil
+}
+
+// flush flushes destination when it can be flushed: a *bufio.Writer, say.
+func flush(destination io.Writer) error {
+	if flusher, ok := destination.(interface{ Flush() error }); ok {
+		return flusher.Flush()
+	}
+	return nil
+}
+
+// contextWriter fails every write once ctx has ended, so a long archive stops part-way.
+type contextWriter struct {
+	ctx context.Context
+	w   io.Writer
+}
+
+func (c contextWriter) Write(b []byte) (int, error) {
+	if err := c.ctx.Err(); err != nil {
+		return 0, err
+	}
+	return c.w.Write(b)
 }
 
 // Close releases the store's connection, when the store is an io.Closer; the protector is left as

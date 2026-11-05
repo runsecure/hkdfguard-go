@@ -7,7 +7,7 @@
 #                 keywrapping/nativev1, keywrapping/awskms, keywrapping/azurekeyvault,
 #                 keywrapping/googlekms, keywrapping/hashicorpvault, cache/awssecretsmanager,
 #                 cache/azurekeyvault, cache/googlesecretmanager, cache/hashicorpvault,
-#                 cache/filepersecret, pipeline, pipeline/awssecretsmanager,
+#                 cache/filepersecret, cache/jsonsecretsfile, pipeline, pipeline/awssecretsmanager,
 #                 pipeline/azurekeyvault, pipeline/googlesecretmanager, pipeline/hashicorpvault,
 #                 integration/configurationresolver, options/certificate or systemdcredentials
 #   module_path   its module path
@@ -32,7 +32,8 @@
 #   keywrapping/hashicorpvault/vMAJOR.MINOR.PATCH[-suffix] that nested module
 #   cache/<store>/vMAJOR.MINOR.PATCH[-suffix]            that nested module: awssecretsmanager,
 #                                                        azurekeyvault, googlesecretmanager,
-#                                                        hashicorpvault or filepersecret
+#                                                        hashicorpvault, filepersecret or
+#                                                        jsonsecretsfile
 #   pipeline/vMAJOR.MINOR.PATCH[-suffix]                 that nested module
 #   pipeline/<store>/vMAJOR.MINOR.PATCH[-suffix]         that nested module: awssecretsmanager,
 #                                                        azurekeyvault, googlesecretmanager or
@@ -65,7 +66,7 @@ if [[ ${tag} =~ ^${SEMVER}$ ]]; then
 elif [[ ${tag} =~ ^(securefile|systemdcredentials|cryptoprovider/aesgcm256|keywrapping/nativev1|keywrapping/awskms|keywrapping/azurekeyvault|keywrapping/googlekms|keywrapping/hashicorpvault)/${SEMVER}$ ]]; then
     module_dir="${BASH_REMATCH[1]}"
     artifact="hkdfguard-go-$(basename "${module_dir}")"
-elif [[ ${tag} =~ ^(cache/(awssecretsmanager|azurekeyvault|googlesecretmanager|hashicorpvault|filepersecret))/${SEMVER}$ ]]; then
+elif [[ ${tag} =~ ^(cache/(awssecretsmanager|azurekeyvault|googlesecretmanager|hashicorpvault|filepersecret|jsonsecretsfile))/${SEMVER}$ ]]; then
     module_dir="${BASH_REMATCH[1]}"
     artifact="hkdfguard-go-cache-${BASH_REMATCH[2]}"
 elif [[ ${tag} =~ ^(pipeline(/(awssecretsmanager|azurekeyvault|googlesecretmanager|hashicorpvault))?)/${SEMVER}$ ]]; then
@@ -78,7 +79,7 @@ elif [[ ${tag} =~ ^(options/certificate)/${SEMVER}$ ]]; then
     module_dir="${BASH_REMATCH[1]}"
     artifact="hkdfguard-go-options-certificate"
 else
-    die "tag '${tag}' is not vMAJOR.MINOR.PATCH (optionally -suffix), on its own or under securefile/, cryptoprovider/aesgcm256/, keywrapping/nativev1/, keywrapping/awskms/, keywrapping/azurekeyvault/, keywrapping/googlekms/, keywrapping/hashicorpvault/, cache/{awssecretsmanager,azurekeyvault,googlesecretmanager,hashicorpvault,filepersecret}/, pipeline/, pipeline/{awssecretsmanager,azurekeyvault,googlesecretmanager,hashicorpvault}/, integration/configurationresolver/, options/certificate/ or systemdcredentials/"
+    die "tag '${tag}' is not vMAJOR.MINOR.PATCH (optionally -suffix), on its own or under securefile/, cryptoprovider/aesgcm256/, keywrapping/nativev1/, keywrapping/awskms/, keywrapping/azurekeyvault/, keywrapping/googlekms/, keywrapping/hashicorpvault/, cache/{awssecretsmanager,azurekeyvault,googlesecretmanager,hashicorpvault,filepersecret,jsonsecretsfile}/, pipeline/, pipeline/{awssecretsmanager,azurekeyvault,googlesecretmanager,hashicorpvault}/, integration/configurationresolver/, options/certificate/ or systemdcredentials/"
 fi
 version="${tag##*/}"
 

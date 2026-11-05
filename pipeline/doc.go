@@ -2,7 +2,9 @@
 // implementations - the Go port of the .NET HkdfGuard.Pipeline library. A provisioning pipeline
 // pulls a fixed list of secrets from a secret store, encrypts each at once with a
 // hkdfguard.PipelineDataProtector bound to its file name, keeps only the ciphertext, and writes one
-// file per secret: the folder layout cache/filepersecret reads at runtime. No key ring is involved:
+// file per secret - the folder layout cache/filepersecret reads at runtime - or one JSON file of them
+// all, the file cache/jsonsecretsfile reads. Either can instead be written to an io.Writer, such as a
+// remote command's stdin over ssh: a tar archive of the files, or the JSON. No key ring is involved:
 // the protector's key is the only one, handed to the native platform's wrap process once the files
 // are written.
 //
@@ -21,7 +23,8 @@
 //	defer writer.Close()
 //	if err := writer.PullSecrets(ctx); err != nil { ... }
 //	if err := writer.WriteProtectedSecretFiles(`C:\HkdfGuardSecrets\myapp`); err != nil { ... }
-//	// Then hand protector.KeyBase64() to the wrap tool, and register the key at version 3.
+//	// Then write the key to the wrap tool's stdin - protector.WriteDEK(ctx, stdin) - and register
+//	// it at version 3.
 //
 // # Names and files
 //
@@ -51,6 +54,25 @@
 // WriteProtectedSecretFiles then fails with ErrNotPulled until a pull completes.
 // WriteProtectedSecretFiles creates the folder and replaces only its own files, each its value as
 // UTF-8 without a byte order mark.
+//
+// # One JSON file, and streams
+//
+// WriteJSONSecrets writes one JSON object instead - a member per file name, mapped to its encrypted
+// value, in ordinal order - replacing the file and creating its folder. Its bytes are the .NET
+// port's: indented by two spaces, nothing escaped that needn't be ('+', '<', '>' and '&' as they
+// are), no final line ending, and lines ending as .NET's Environment.NewLine does - CRLF on
+// Windows, LF elsewhere - so the two ports' files differ only in their encrypted values.
+//
+// WriteProtectedSecretFilesTo writes the files WriteProtectedSecretFiles would write as a PAX tar
+// archive - one regular file per secret, ordinal order, mode 0644, modified now, which GNU tar and
+// bsdtar both unpack - and WriteJSONSecretsTo writes the JSON, each to an io.Writer: for
+//
+//	ssh -T host sudo -n tar -x --no-same-owner -f - -C /etc/myapp/secrets
+//	ssh -T host sudo -n tee /etc/myapp/secrets.json
+//
+// Each refuses a nil writer (ErrInvalidArgument) and a writer that hasn't pulled (ErrNotPulled),
+// checks ctx before every write, flushes the writer when it has a Flush() error method, and never
+// closes it: close it afterwards, so the remote command sees the end of its input.
 //
 // # What is zeroed
 //

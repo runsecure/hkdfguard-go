@@ -9,8 +9,12 @@
 package pipelinetest
 
 import (
+	"archive/tar"
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"slices"
@@ -95,6 +99,75 @@ func FileNames(t testing.TB, folder string) []string {
 	slices.Sort(names)
 	return names
 }
+
+// JSONMembers are the names of the members of contents, one JSON object, in the order it holds
+// them, and their string values; it fails the test unless contents is exactly that object.
+func JSONMembers(t testing.TB, contents []byte) ([]string, map[string]string) {
+	t.Helper()
+	decoder := json.NewDecoder(bytes.NewReader(contents))
+	if token, err := decoder.Token(); err != nil || token != json.Delim('{') {
+		t.Fatalf("the JSON starts %v, %v; want an object", token, err)
+	}
+	var names []string
+	values := map[string]string{}
+	for decoder.More() {
+		name, err := decoder.Token()
+		if err != nil {
+			t.Fatal(err)
+		}
+		var value string
+		if err := decoder.Decode(&value); err != nil {
+			t.Fatalf("%v: %v", name, err)
+		}
+		names = append(names, name.(string))
+		values[name.(string)] = value
+	}
+	if token, err := decoder.Token(); err != nil || token != json.Delim('}') {
+		t.Fatalf("the JSON object ends %v, %v", token, err)
+	}
+	if _, err := decoder.Token(); err != io.EOF {
+		t.Fatalf("more follows the JSON object: %v", err)
+	}
+	return names, values
+}
+
+// TarEntry is one file in a tar archive.
+type TarEntry struct {
+	Header *tar.Header
+	Value  string
+}
+
+// TarEntries are the entries of the tar archive in contents, in order.
+func TarEntries(t testing.TB, contents []byte) []TarEntry {
+	t.Helper()
+	archive := tar.NewReader(bytes.NewReader(contents))
+	var entries []TarEntry
+	for {
+		header, err := archive.Next()
+		if err == io.EOF {
+			return entries
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		value, err := io.ReadAll(archive)
+		if err != nil {
+			t.Fatal(err)
+		}
+		entries = append(entries, TarEntry{Header: header, Value: string(value)})
+	}
+}
+
+// flushRecorder is a destination that records what is written to it, whether it was flushed, and
+// whether it was closed.
+type flushRecorder struct {
+	bytes.Buffer
+	flushed bool
+	closed  bool
+}
+
+func (f *flushRecorder) Flush() error { f.flushed = true; return nil }
+func (f *flushRecorder) Close() error { f.closed = true; return nil }
 
 // scenario is one Contract test's store, protector and folder.
 type scenario struct {
@@ -343,6 +416,184 @@ var contract = []struct {
 		}
 		if _, err := os.Stat(s.folder); !errors.Is(err, os.ErrNotExist) {
 			s.t.Fatalf("the folder was made: %v", err)
+		}
+	}},
+
+	{"ThroughTheInterface_WritesOneJSONObject_OfFileNamesAndValues", func(s *scenario) {
+		s.store.SetKeys("db-login", `{"password":"pässwörd"}`)
+		s.store.SetText("api-key", "key")
+		w := s.writer("db-login#password", "api-key")
+		s.pull(w)
+		path := filepath.Join(s.folder, "nested", "secrets.json")
+
+		if err := w.WriteJSONSecrets(path); err != nil {
+			s.t.Fatal(err)
+		}
+
+		contents, err := os.ReadFile(path)
+		if err != nil {
+			s.t.Fatal(err)
+		}
+		if contents[0] != '{' {
+			s.t.Fatalf("the file starts %q; want the object, without a byte order mark", contents[:1])
+		}
+		names, values := JSONMembers(s.t, contents)
+		if !slices.Equal(names, []string{"api-key", "db-login__password"}) {
+			s.t.Fatalf("the members are %q", names)
+		}
+		if values["db-login__password"] != w.ProtectedSecrets()["db-login__password"] {
+			s.t.Fatal("db-login__password isn't the value kept")
+		}
+		if got := Decrypt(s.t, s.protector, values["db-login__password"], "db-login__password"); got != "pässwörd" {
+			s.t.Fatalf("db-login__password holds %q; want pässwörd", got)
+		}
+		if bytes.Contains(contents, []byte(`\u`)) {
+			s.t.Fatalf("the file escapes what it needn't: %s", contents)
+		}
+	}},
+
+	{"WriteJSONSecrets_ReplacesTheFile_AndNeedsAPullAndAPath", func(s *scenario) {
+		w := s.writer("item")
+		path := filepath.Join(s.folder, "secrets.json")
+		if err := w.WriteJSONSecrets(path); !errors.Is(err, pipeline.ErrNotPulled) {
+			s.t.Fatalf("before a pull: %v; want pipeline.ErrNotPulled", err)
+		}
+		if err := w.WriteJSONSecrets(""); !errors.Is(err, pipeline.ErrInvalidArgument) {
+			s.t.Fatalf("without a path: %v; want pipeline.ErrInvalidArgument", err)
+		}
+		if _, err := os.Stat(s.folder); !errors.Is(err, os.ErrNotExist) {
+			s.t.Fatalf("the folder was made: %v", err)
+		}
+
+		if err := os.MkdirAll(s.folder, 0o700); err != nil {
+			s.t.Fatal(err)
+		}
+		stale := `{"stale":"value","padding":"making the old file longer than the new one"}`
+		if err := os.WriteFile(path, []byte(stale), 0o600); err != nil {
+			s.t.Fatal(err)
+		}
+		s.store.SetText("item", "new")
+		s.pull(w)
+
+		if err := w.WriteJSONSecrets(path); err != nil {
+			s.t.Fatal(err)
+		}
+
+		contents, _ := os.ReadFile(path)
+		names, values := JSONMembers(s.t, contents)
+		if !slices.Equal(names, []string{"item"}) {
+			s.t.Fatalf("the members are %q; want only item", names)
+		}
+		if got := Decrypt(s.t, s.protector, values["item"], "item"); got != "new" {
+			s.t.Fatalf("item holds %q; want new", got)
+		}
+	}},
+
+	{"ThroughTheInterface_StreamsATarOfTheFiles_ThatAnyTarUnpacks", func(s *scenario) {
+		s.store.SetKeys("db-login", `{"password":"pässwörd"}`)
+		s.store.SetText("api-key", "key")
+		w := s.writer("db-login#password", "api-key")
+		s.pull(w)
+		stdin := &flushRecorder{}
+
+		if err := w.WriteProtectedSecretFilesTo(s.t.Context(), stdin); err != nil {
+			s.t.Fatal(err)
+		}
+
+		if !stdin.flushed || stdin.closed {
+			s.t.Fatalf("flushed %v, closed %v; want flushed and left open", stdin.flushed, stdin.closed)
+		}
+		entries := TarEntries(s.t, stdin.Bytes())
+		var names []string
+		for _, entry := range entries {
+			names = append(names, entry.Header.Name)
+			if entry.Header.Typeflag != tar.TypeReg || entry.Header.Mode != 0o644 || entry.Header.Format != tar.FormatPAX {
+				s.t.Errorf("%s is type %c, mode %o, format %v; want a regular PAX file, mode 0644",
+					entry.Header.Name, entry.Header.Typeflag, entry.Header.Mode, entry.Header.Format)
+			}
+		}
+		if !slices.Equal(names, []string{"api-key", "db-login__password"}) {
+			s.t.Fatalf("the archive holds %q", names)
+		}
+		if entries[1].Value != w.ProtectedSecrets()["db-login__password"] {
+			s.t.Fatal("db-login__password isn't the value kept")
+		}
+		if got := Decrypt(s.t, s.protector, entries[1].Value, "db-login__password"); got != "pässwörd" {
+			s.t.Fatalf("db-login__password holds %q; want pässwörd", got)
+		}
+
+		// The same files WriteProtectedSecretFiles writes, byte for byte.
+		if err := w.WriteProtectedSecretFiles(s.folder); err != nil {
+			s.t.Fatal(err)
+		}
+		for _, entry := range entries {
+			onDisk, err := os.ReadFile(filepath.Join(s.folder, entry.Header.Name))
+			if err != nil || string(onDisk) != entry.Value || entry.Header.Size != int64(len(onDisk)) {
+				s.t.Errorf("%s: the archive holds %q, the file %q (%v)", entry.Header.Name, entry.Value, onDisk, err)
+			}
+		}
+	}},
+
+	{"ThroughTheInterface_StreamsTheJSONObject_AsTheFileHoldsIt", func(s *scenario) {
+		s.store.SetText("item", "s3cret")
+		w := s.writer("item")
+		s.pull(w)
+		stdin := &flushRecorder{}
+
+		if err := w.WriteJSONSecretsTo(s.t.Context(), stdin); err != nil {
+			s.t.Fatal(err)
+		}
+		path := filepath.Join(s.folder, "secrets.json")
+		if err := w.WriteJSONSecrets(path); err != nil {
+			s.t.Fatal(err)
+		}
+
+		if !stdin.flushed || stdin.closed {
+			s.t.Fatalf("flushed %v, closed %v; want flushed and left open", stdin.flushed, stdin.closed)
+		}
+		if onDisk, _ := os.ReadFile(path); !bytes.Equal(onDisk, stdin.Bytes()) {
+			s.t.Fatalf("streamed %q; the file holds %q", stdin.Bytes(), onDisk)
+		}
+		_, values := JSONMembers(s.t, stdin.Bytes())
+		if got := Decrypt(s.t, s.protector, values["item"], "item"); got != "s3cret" {
+			s.t.Fatalf("item holds %q; want s3cret", got)
+		}
+	}},
+
+	{"TheStreamWrites_NeedAPullAStreamAndALiveContext", func(s *scenario) {
+		w := s.writer("item")
+		var stdin bytes.Buffer
+		ended, cancel := context.WithCancel(s.t.Context())
+		cancel()
+		for name, try := range map[string]func() error{
+			"a tar before a pull":    func() error { return w.WriteProtectedSecretFilesTo(s.t.Context(), &stdin) },
+			"the JSON before a pull": func() error { return w.WriteJSONSecretsTo(s.t.Context(), &stdin) },
+		} {
+			if err := try(); !errors.Is(err, pipeline.ErrNotPulled) {
+				s.t.Errorf("%s: %v; want pipeline.ErrNotPulled", name, err)
+			}
+		}
+		for name, try := range map[string]func() error{
+			"a tar to nothing":    func() error { return w.WriteProtectedSecretFilesTo(s.t.Context(), nil) },
+			"the JSON to nothing": func() error { return w.WriteJSONSecretsTo(s.t.Context(), nil) },
+		} {
+			if err := try(); !errors.Is(err, pipeline.ErrInvalidArgument) {
+				s.t.Errorf("%s: %v; want pipeline.ErrInvalidArgument", name, err)
+			}
+		}
+
+		s.store.SetText("item", "s3cret")
+		s.pull(w)
+		for name, try := range map[string]func() error{
+			"a tar once ctx has ended":    func() error { return w.WriteProtectedSecretFilesTo(ended, &stdin) },
+			"the JSON once ctx has ended": func() error { return w.WriteJSONSecretsTo(ended, &stdin) },
+		} {
+			if err := try(); !errors.Is(err, context.Canceled) {
+				s.t.Errorf("%s: %v; want context.Canceled", name, err)
+			}
+		}
+		if stdin.Len() != 0 {
+			s.t.Fatalf("%d bytes were written", stdin.Len())
 		}
 	}},
 

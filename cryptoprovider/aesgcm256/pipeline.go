@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"io"
 	"sync"
 
 	"github.com/runsecure/hkdfguard-go"
@@ -79,6 +80,41 @@ func (p *PipelineDataProtector) KeyBase64() []byte {
 		base64.StdEncoding.Encode(p.base64, p.key)
 	}
 	return p.base64
+}
+
+// WriteDEK writes the key to destination exactly as the wrap tool's --dek-stdin reads it - its
+// base64 form as ASCII (44 bytes), with no line ending - and then flushes destination if it has a
+// Flush() error method. The base64 is encoded straight from the key into a buffer of its own,
+// never through a string or the buffer KeyBase64 returns, and zeroed once the write and flush
+// complete. destination is left open: close it afterwards, so the tool sees the end of its input.
+//
+// It fails when destination is nil, with ctx's error when ctx has ended (nothing is written), with
+// hkdfguard.ErrClosed after Close, and with the error the write or flush returns.
+func (p *PipelineDataProtector) WriteDEK(ctx context.Context, destination io.Writer) error {
+	if destination == nil {
+		return errors.New("aesgcm256: a destination for the key is required")
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	ascii := make([]byte, base64.StdEncoding.EncodedLen(KeySize))
+	defer hkdfguard.Wipe(ascii)
+	p.mu.Lock()
+	if p.isClosed {
+		p.mu.Unlock()
+		return hkdfguard.ErrClosed
+	}
+	base64.StdEncoding.Encode(ascii, p.key)
+	p.mu.Unlock()
+
+	if _, err := destination.Write(ascii); err != nil {
+		return err
+	}
+	if flusher, ok := destination.(interface{ Flush() error }); ok {
+		return flusher.Flush()
+	}
+	return nil
 }
 
 // Encrypt encrypts plaintext bound to secretIdentifier (the configuration key the value will be

@@ -63,6 +63,7 @@ jobs:
             cache/googlesecretmanager/go.sum
             cache/hashicorpvault/go.sum
             cache/filepersecret/go.sum
+            cache/jsonsecretsfile/go.sum
             pipeline/go.sum
             pipeline/awssecretsmanager/go.sum
             pipeline/azurekeyvault/go.sum

@@ -99,7 +99,7 @@ to their names (`hkdfguard.CacheAAD`), matched ignoring ASCII case only.
   `cache/*` modules below.
 - `cache.NewCollection(a, b, ...)` - several caches behind one lookup, first match wins. A source
   that fails fails the lookup, even when a later source holds the name, so add local sources (a
-  `cache.Cache`, a `cache/filepersecret` cache) before remote ones: a remote cache doesn't remember a
+  `cache.Cache`, a `cache/filepersecret` or `cache/jsonsecretsfile` cache) before remote ones: a remote cache doesn't remember a
   name its store lacks, so one added first makes a network call for every local-only name.
 
 ### `encryptedconfig`
@@ -440,14 +440,49 @@ failure is returned as `securefile` reports it. A cached value isn't refreshed: 
 picked up by a new cache. It is its own module because it reads through `securefile`, which depends
 on the root module the `cache` package is in.
 
+### `cache/jsonsecretsfile` (separate module): reading secrets from one JSON file
+
+Go port of the .NET `JsonSecretsFileReadOnlyCache`: `jsonsecretsfile.New` returns a
+`*jsonsecretsfile.Cache`, a `hkdfguard.ProtectedReadOnlyCache` over one JSON file holding every
+secret, as a pipeline writer's `WriteJSONSecrets` (or `WriteJSONSecretsTo`) writes it - a single
+object mapping each secret's name to its already-encrypted value. The whole file is read through
+`securefile.ReadTrustedFile` on the first lookup, every value authenticated under its name, and the
+values kept in memory still encrypted; every later lookup is served from memory:
+
+```go
+secrets, err := jsonsecretsfile.New("/etc/myapp/secrets.json", deployers, ring, dek.NewDefaultFormatProvider(), jsonsecretsfile.Options{})
+if err != nil { ... }
+
+n, err := secrets.Decrypt(ctx, "Db-Password", buffer) // 0 if the file holds no such secret
+```
+
+The file is delivered as one, so it is loaded as one: a value that fails authentication
+(`hkdfguard.ErrAuthenticationFailed`), names a key version the ring doesn't hold
+(`hkdfguard.ErrKeyNotFound`) or isn't in the format fails the whole load, and nothing is kept, so
+the file is read again on the next lookup. So is a file that isn't exactly the secrets object -
+not valid JSON, not one object, a name `filepersecret.IsValidName` refuses or one given twice
+ignoring case, a value that isn't a non-empty string - which fails with
+`jsonsecretsfile.ErrInvalidData`. Names are looked up ignoring ASCII case, whatever the
+filesystem; any name that couldn't be one returns 0, as does every name while the file (or a
+folder above it) is missing, which isn't remembered. A file over `Options.MaxFileLength` (default
+1 MiB, `jsonsecretsfile.DefaultMaxFileLength`) fails with `securefile.ErrTooLarge`, and an
+untrusted location as for `cache/filepersecret`. One load runs at a time; a lookup waiting for it
+stops when its context ends. The loaded values are kept for the life of the cache. Depends on the
+root module, `securefile` and `cache/filepersecret` (for its name rule).
+
 ### Pipeline writers: `pipeline`, `pipeline/awssecretsmanager`, `pipeline/azurekeyvault`, `pipeline/googlesecretmanager`, `pipeline/hashicorpvault` (separate modules)
 
 Go ports of `HkdfGuard.Pipeline` and its four store writers: the end of a provisioning pipeline,
 before a durable KEK exists. A writer pulls a fixed list of secrets from a secret store, encrypts
 each at once with a `hkdfguard.PipelineDataProtector` (`aesgcm256.NewPipelineDataProtector`) bound
 to its file name, keeps only the ciphertext, and writes one file per secret - the folder layout
-`cache/filepersecret` reads at runtime. No key ring is involved: once the files are written, the
-protector's key (`KeyBase64`) goes to the native platform's wrap process.
+`cache/filepersecret` reads at runtime - or one JSON file of them all (`WriteJSONSecrets`), the file
+`cache/jsonsecretsfile` reads. Each can also be written to an `io.Writer`, for a remote command's
+stdin: `WriteProtectedSecretFilesTo` as a PAX tar archive of the files (for
+`ssh -T host sudo -n tar -x --no-same-owner -f - -C folder`), `WriteJSONSecretsTo` as the JSON (for
+`ssh -T host sudo -n tee /etc/app/secrets.json`). No key ring is involved: once the files are
+written, the protector's key goes to the native platform's wrap process - `WriteDEK` writes it to the
+wrap tool's stdin (`--dek-stdin`) from a buffer zeroed afterwards, or `KeyBase64` hands it over.
 
 ```go
 protector, err := aesgcm256.NewPipelineDataProtector(dek.NewDefaultFormatProvider(), 3)
@@ -459,12 +494,24 @@ if err != nil { ... }
 defer writer.Close()
 if err := writer.PullSecrets(ctx); err != nil { ... }
 if err := writer.WriteProtectedSecretFiles(`C:\HkdfGuardSecrets\myapp`); err != nil { ... }
-// Then hand protector.KeyBase64() to the wrap tool, and register the key at version 3.
+// Then hand the key to the wrap tool - protector.WriteDEK(ctx, stdin) - and register it at version 3.
+```
+
+Or straight onto another host, over ssh, with nothing written locally:
+
+```go
+unpack := exec.CommandContext(ctx, "ssh", "-T", "app-host", "sudo", "-n", "tar", "-x", "--no-same-owner", "-f", "-", "-C", "/etc/myapp/secrets")
+stdin, err := unpack.StdinPipe()
+if err != nil { ... }
+if err := unpack.Start(); err != nil { ... }
+writeErr := writer.WriteProtectedSecretFilesTo(ctx, stdin)
+closeErr := stdin.Close() // tar sees the end of its input
+if err := errors.Join(writeErr, closeErr, unpack.Wait()); err != nil { ... }
 ```
 
 | Module | Purpose |
 |---|---|
-| `pipeline` | `pipeline.New` returns a `*pipeline.Writer` (a `hkdfguard.SecretPipelineWriter`) over a `pipeline.SecretStore`: it takes secret names - `name` or `name#key` - reads each secret once however many of its keys are listed, encrypts every value bound to its file name (`/` and `#` become `__`, and the name must be one `filepersecret.IsValidName` accepts; two differing only in case are refused), reports every missing value in one `*pipeline.MissingSecretsError` (`pipeline.ErrSecretNotFound`) after keeping the rest, keeps nothing when a read fails otherwise, and writes UTF-8 files without a BOM, replacing only its own. A key's value is a string's text, or a number's, `true`'s or `false`'s JSON text; a JSON object holding a key twice, or a value that isn't UTF-8 text, is refused (`pipeline.ErrInvalidSecretData`). A store supplies only `IsValidName` and `ReadSecret`; `pipeline.ReadBody` reads a response body into a buffer zeroed by the caller. Depends on the root module and `cache/filepersecret` (for its file-name rule). |
+| `pipeline` | `pipeline.New` returns a `*pipeline.Writer` (a `hkdfguard.SecretPipelineWriter`) over a `pipeline.SecretStore`: it takes secret names - `name` or `name#key` - reads each secret once however many of its keys are listed, encrypts every value bound to its file name (`/` and `#` become `__`, and the name must be one `filepersecret.IsValidName` accepts; two differing only in case are refused), reports every missing value in one `*pipeline.MissingSecretsError` (`pipeline.ErrSecretNotFound`) after keeping the rest, keeps nothing when a read fails otherwise, and writes UTF-8 files without a BOM, replacing only its own - or one JSON object of them all (`WriteJSONSecrets`: a member per file name, in ordinal order, laid out byte for byte as .NET's indented `Utf8JsonWriter` with relaxed escaping writes it, `\r\n` line endings on Windows and `\n` elsewhere, as .NET's `Environment.NewLine`), replacing the file. `WriteProtectedSecretFilesTo` and `WriteJSONSecretsTo` write a PAX tar of the files (one regular file per secret, ordinal order, mode 0644, modified now - GNU tar and bsdtar both read it) or the JSON to an `io.Writer`, flushed when it has `Flush() error` and left open; every write checks the context. A key's value is a string's text, or a number's, `true`'s or `false`'s JSON text; a JSON object holding a key twice, or a value that isn't UTF-8 text, is refused (`pipeline.ErrInvalidSecretData`). A store supplies only `IsValidName` and `ReadSecret`; `pipeline.ReadBody` reads a response body into a buffer zeroed by the caller. Depends on the root module and `cache/filepersecret` (for its file-name rule). |
 | `pipeline/hashicorpvault` | `New(client, protector, names, options)` over one KV engine, version 1 or 2, through the application's `*api.Client`: `path` or `path#key`, a name without a key reading `Options.DefaultKey` (`"value"`); raw reads parsed straight into zeroed buffers; https only (http and `unix://` on the local host), and the client must set `DisableRedirects` unless `Options.AllowRedirects`. Failures are `*hashicorpvault.Error` (`ErrVault`). |
 | `pipeline/awssecretsmanager` | `New(client, protector, names)` through the application's `*secretsmanager.Client`: `name` for the whole `SecretString`, `name#key` for a member of a key/value secret; a per-call middleware below the deserializer takes the body and hands the SDK `{}`, with response-body logging forced off; a `SecretBinary` is refused. |
 | `pipeline/azurekeyvault` | `New(vaultURL, credential, protector, names, options)` - its own `azsecrets.Client` from a copy of `Options.ClientOptions`: `name` or `name#key`; a per-retry policy reads the unbuffered body and hands the SDK `{}`; options that log bodies are refused. |
@@ -720,7 +767,7 @@ credentials: each runs only when its `HKDFGUARD_TEST_*` variable asks. No secret
 permissions.
 
 A Go module is released by its tag alone: the Go module proxy serves the tagged source, so there
-is nothing to pack, sign or push to a feed. The twenty-one published modules share one version and are
+is nothing to pack, sign or push to a feed. The twenty-two published modules share one version and are
 tagged together, at the same commit. Before tagging, set every nested module's requirement on the
 root module and on `securefile` to that version (each `go.mod` and `integration/go.mod`), then:
 
@@ -730,7 +777,7 @@ tags=("${version}")
 for module in securefile cryptoprovider/aesgcm256 keywrapping/nativev1 keywrapping/awskms \
     keywrapping/azurekeyvault keywrapping/googlekms keywrapping/hashicorpvault \
     cache/awssecretsmanager cache/azurekeyvault cache/googlesecretmanager cache/hashicorpvault \
-    cache/filepersecret pipeline pipeline/awssecretsmanager pipeline/azurekeyvault \
+    cache/filepersecret cache/jsonsecretsfile pipeline pipeline/awssecretsmanager pipeline/azurekeyvault \
     pipeline/googlesecretmanager pipeline/hashicorpvault integration/configurationresolver \
     options/certificate systemdcredentials; do
   tags+=("${module}/${version}")
