@@ -54,7 +54,8 @@ const (
 	ResultSuccess = "success"
 	ResultError   = "error"
 
-	// ResultNotFound is a populating cache's fetch whose source holds no such value.
+	// ResultNotFound is a populating cache's fetch whose source holds no such value, or a cache
+	// decrypt of a name no value is stored under.
 	ResultNotFound = "not_found"
 )
 

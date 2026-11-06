@@ -10,10 +10,12 @@ const (
 )
 
 // CacheOperations returns the Cache component's operations counter, on Cache.Meter(). It counts
-// every ProtectedCache Add/AddOrUpdate call and every fetch a populating cache (cache.RemoteCache,
-// behind the AWS Secrets Manager, Azure Key Vault, Google Secret Manager and HashiCorp Vault caches)
-// makes on a miss, tagged with AttrOperationName (which SpanCache* operation ran) and AttrResult
-// (ResultSuccess or ResultError, or ResultNotFound for a fetch whose source has no such value).
+// every ProtectedCache Add/AddOrUpdate call, every Decrypt call of the caches in package cache, and
+// every fetch a populating cache (a cache.ReadOnlyCache, or a cache.RemoteCache behind the AWS
+// Secrets Manager, Azure Key Vault, Google Secret Manager and HashiCorp Vault caches) makes on a
+// miss, tagged with AttrOperationName (which SpanCache* operation ran) and AttrResult
+// (ResultSuccess or ResultError, or ResultNotFound for a fetch whose source has no such value and
+// a Decrypt of a name no value is stored under).
 //
 // The counter is resolved from the current global MeterProvider on each call; providers cache
 // instruments by name, so repeated calls return the same instrument.
