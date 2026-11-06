@@ -8,9 +8,10 @@ import (
 	"unicode/utf8"
 )
 
-// The Windows key-file location rules - the native library's (hkdfguard_open_file's) - kept free
-// of system calls: a security descriptor, attributes and paths are passed in as plain data, so the
-// rules are tested on every platform. read_windows.go wires them to the Win32 calls.
+// The Windows location rules for a key file, or any file ReadTrustedFile reads - the native
+// library's (hkdfguard_open_file's) - kept free of system calls: a security descriptor, attributes
+// and paths are passed in as plain data, so the rules are tested on every platform.
+// read_windows.go wires them to the Win32 calls.
 //
 //   - The path names a file on a local fixed drive. UNC paths, device paths (\\?\, \\.\) and
 //     network drives are refused before anything is opened, so no server named in a path is ever
@@ -150,7 +151,7 @@ func trustedPrincipals(trust KeyFileTrust, canonicalSID func(string) (string, bo
 		}
 		if slices.Contains(neverTrusted, sid) {
 			return nil, invalidTrust("KeyFileTrust.WindowsPrincipals holds %s, which every account (or every signed-in one) is in; "+
-				"trusting it would trust anyone to replace a key file.", describePrincipal(sid, accountName))
+				"trusting it would trust anyone to replace a trusted file.", describePrincipal(sid, accountName))
 		}
 		trusted = append(trusted, sid)
 	}
@@ -161,10 +162,10 @@ func trustedPrincipals(trust KeyFileTrust, canonicalSID func(string) (string, bo
 // driveType is the DRIVE_* type of the drive the path's root names.
 func verifyPathForm(fullPath string, driveType uint32) error {
 	if strings.HasPrefix(fullPath, `\\`) || strings.HasPrefix(fullPath, "//") {
-		return untrustedWindows(fullPath, "it is a UNC or device path; key files are only read from a local drive")
+		return untrustedWindows(fullPath, "it is a UNC or device path; trusted files are only read from a local drive")
 	}
 	if driveType != driveFixed {
-		return untrustedWindows(fullPath, "it is on a %s drive; key files are only read from a local fixed drive", driveTypeName(driveType))
+		return untrustedWindows(fullPath, "it is on a %s drive; trusted files are only read from a local fixed drive", driveTypeName(driveType))
 	}
 	return nil
 }
@@ -254,9 +255,10 @@ func describeRights(mask uint32) string {
 	return fmt.Sprintf("0x%08X (%s)", mask, strings.Join(names, ", "))
 }
 
-// untrustedWindows is the refusal of a key file whose location isn't trusted.
+// untrustedWindows is the refusal of a file - a key file, or one ReadTrustedFile reads - whose
+// location isn't trusted.
 func untrustedWindows(path, format string, args ...any) *KeyFileError {
-	return keyFileError(ErrUntrusted, path, "Key file '%s' is not trusted: %s. Keep key files in a folder of their own that only administrators "+
+	return keyFileError(ErrUntrusted, path, "'%s' is not trusted: %s. Keep it in a folder of its own that only administrators "+
 		"(or a trusted deployer, see KeyFileTrust) can modify, with inherited permissions removed.", path, fmt.Sprintf(format, args...))
 }
 

@@ -7,16 +7,23 @@ import (
 )
 
 var (
-	// ErrUntrusted reports a key file whose location is not trusted: it, or a folder above it, is
-	// owned or modifiable by an account that is neither an administrator nor named by the
-	// KeyFileTrust, or its path runs through something that could redirect it. A *KeyFileError
-	// carrying it also matches fs.ErrPermission, as every port reports such a file.
+	// ErrUntrusted reports a key file (or a file ReadTrustedFile reads) whose location is not
+	// trusted: it, or a folder above it, is owned or modifiable by an account that is neither an
+	// administrator nor named by the KeyFileTrust, or its path runs through something that could
+	// redirect it. A *KeyFileError carrying it also matches fs.ErrPermission, as every port reports
+	// such a file.
 	ErrUntrusted = errors.New("securefile: key file is not trusted")
 
-	// ErrBusy reports a key file another process has open for writing (Windows).
+	// ErrBusy reports a key file (or a file ReadTrustedFile reads) another process has open for
+	// writing (Windows).
 	ErrBusy = errors.New("securefile: key file is open for writing by another process")
 
-	// ErrUnsupportedPlatform reports a platform key files are not read on: anything but Windows,
+	// ErrTooLarge reports a file ReadTrustedFile or ParseTrustedFile refused for being longer than
+	// the most its caller allows. A key file over hkdfguard.MaxWrappedKeyBytes is
+	// hkdfguard.ErrInvalidKeyFile instead, as in every port.
+	ErrTooLarge = errors.New("securefile: file is larger than its limit")
+
+	// ErrUnsupportedPlatform reports a platform key files (and trusted files) are not read on: anything but Windows,
 	// Linux and Apple silicon macOS.
 	ErrUnsupportedPlatform = errors.New("securefile: unsupported platform")
 
@@ -25,18 +32,20 @@ var (
 	ErrInvalidTrust = errors.New("securefile: invalid key file trust")
 )
 
-// KeyFileError reports a key file ReadTrustedKeyFile refused or could not read. It unwraps to the
-// error a caller can act on, so errors.Is works without parsing the message:
+// KeyFileError reports a key file ReadTrustedKeyFile - or a file ReadTrustedFile or
+// ParseTrustedFile - refused or could not read. It unwraps to the error a caller can act on, so
+// errors.Is works without parsing the message:
 //
 //   - fs.ErrNotExist: the file, or a folder on its path, does not exist.
 //   - fs.ErrPermission: this account may not read it - or, together with ErrUntrusted, its location
 //     is not trusted (the message says "is not trusted" and names what).
 //   - hkdfguard.ErrInvalidKeyFile: it is empty, larger than hkdfguard.MaxWrappedKeyBytes, or holds
-//     what looks like an unwrapped key.
+//     what looks like an unwrapped key (ReadTrustedKeyFile only).
+//   - ErrTooLarge: it is longer than the caller's limit (ReadTrustedFile and ParseTrustedFile only).
 //   - ErrBusy: another process has it open for writing (Windows).
 //   - anything else: the system's own error (a syscall.Errno).
 type KeyFileError struct {
-	// Path is the key file's path, as given or as resolved - whichever the message names.
+	// Path is the file's path, as given or as resolved - whichever the message names.
 	Path string
 
 	// Message describes the refusal.

@@ -13,6 +13,11 @@
 //     a secret out of a JSON response body before an SDK can turn it into a string.
 //   - Collection: several read-only caches behind one lookup, checked in order.
 //
+// The module cache/filepersecret is a read-only cache of another kind: a folder of one already
+// encrypted file per secret, read through securefile, each value bound to its file name with
+// hkdfguard.ConfigurationAAD and cached exactly as its file holds it. It is a module of its own
+// because securefile is one, which depends on this one.
+//
 // Every value is encrypted under its KeyRing's current key when stored, and its entry records that
 // key's version, so a cache follows key rotation while earlier values stay readable. Every value
 // is bound to its name (see hkdfguard.CacheAAD): a ciphertext that ends up under another name fails

@@ -19,6 +19,10 @@ key:** see [Wrap keys with HashiCorp Vault transit](how-to/use-hashicorp-vault-t
 Manager or HashiCorp Vault - into an encrypted in-memory cache: see the *Cache ... secrets* pages
 below.
 
+**Filling `${name}` items in a template** - a connection string, a configuration file - with
+secrets from those caches: see
+[Resolve configuration templates from protected caches](how-to/resolve-configuration-templates.md).
+
 **Porting from the .NET libraries:** the same pages exist in `hkdfguard-dotnet/docs`, with the
 same structure. Everything a value or a key file is made of - the `enc::v<version>::<base64>`
 format, the AES-256-GCM ciphertext, the purpose and name binding, the native key files - is
@@ -41,6 +45,7 @@ byte-identical between the ports, so one deployment serves both.
 | How-to | [Cache Azure Key Vault secrets](how-to/use-azure-key-vault-secret-cache.md) | Draft |
 | How-to | [Cache Google Cloud Secret Manager secrets](how-to/use-google-secret-manager-cache.md) | Draft |
 | How-to | [Cache HashiCorp Vault secrets](how-to/use-hashicorp-vault-secret-cache.md) | Draft |
+| How-to | [Resolve configuration templates from protected caches](how-to/resolve-configuration-templates.md) | Draft |
 | How-to | Provision a service on each platform | Planned (the test-host scripts under `keywrapping/nativev1/scripts` show each platform's steps) |
 | How-to | Create key files in a deployment pipeline | Planned (see [Getting started, step 5](getting-started.md#5-create-a-key-file)) |
 | How-to | Rotate keys | Planned (see the README's `dek` section for now) |

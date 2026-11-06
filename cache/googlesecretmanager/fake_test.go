@@ -29,6 +29,7 @@ import (
 	"github.com/runsecure/hkdfguard-go"
 	"github.com/runsecure/hkdfguard-go/cache"
 	"github.com/runsecure/hkdfguard-go/dek"
+	"github.com/runsecure/hkdfguard-go/internal/gsmcheck"
 )
 
 const (
@@ -200,7 +201,7 @@ func (f *fakeSecretManager) answer(request *secretmanagerpb.AccessSecretVersionR
 		return nil, status.Errorf(codes.NotFound, "Secret [projects/%s/secrets/%s] not found or has no versions.", testProjectNumber, secretID)
 	}
 
-	checksum := crc32c(value)
+	checksum := gsmcheck.CRC32C(value)
 	response := &secretmanagerpb.AccessSecretVersionResponse{
 		Name:    fmt.Sprintf("projects/%s/secrets/%s/versions/1", testProjectNumber, secretID),
 		Payload: &secretmanagerpb.SecretPayload{Data: bytes.Clone(value), DataCrc32C: &checksum},

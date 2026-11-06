@@ -6,8 +6,9 @@
 # build-provenance attestation as the release's assets. Three jobs:
 #
 #   version  turns the tag into the module it releases (scripts/release-tag.sh); fails on a
-#            malformed tag, or on a nested module whose go.mod still carries a replace directive
-#            or a placeholder version of the root module.
+#            malformed tag, or on a nested module whose go.mod requires a placeholder version of
+#            the root module or securefile, or replaces anything but this repository's own modules
+#            with their own directories.
 #   build    build.yml, the same reusable workflow ci.yml runs, on every supported OS.
 #   publish  archives the module's source from the tagged commit, attests its provenance, and
 #            creates the GitHub Release.
@@ -25,6 +26,16 @@
 #   git tag cache/azurekeyvault/v0.1.0 && git push origin cache/azurekeyvault/v0.1.0
 #   git tag cache/googlesecretmanager/v0.1.0 && git push origin cache/googlesecretmanager/v0.1.0
 #   git tag cache/hashicorpvault/v0.1.0 && git push origin cache/hashicorpvault/v0.1.0
+#   git tag cache/filepersecret/v0.1.0 && git push origin cache/filepersecret/v0.1.0
+#   git tag cache/jsonsecretsfile/v0.1.0 && git push origin cache/jsonsecretsfile/v0.1.0
+#   git tag pipeline/v0.1.0 && git push origin pipeline/v0.1.0
+#   git tag pipeline/awssecretsmanager/v0.1.0 && git push origin pipeline/awssecretsmanager/v0.1.0
+#   git tag pipeline/azurekeyvault/v0.1.0 && git push origin pipeline/azurekeyvault/v0.1.0
+#   git tag pipeline/googlesecretmanager/v0.1.0 && git push origin pipeline/googlesecretmanager/v0.1.0
+#   git tag pipeline/hashicorpvault/v0.1.0 && git push origin pipeline/hashicorpvault/v0.1.0
+#   git tag integration/configurationresolver/v0.1.0 && git push origin integration/configurationresolver/v0.1.0
+#   git tag options/certificate/v0.1.0 && git push origin options/certificate/v0.1.0
+#   git tag systemdcredentials/v0.1.0 && git push origin systemdcredentials/v0.1.0
 #   git tag securefile/v0.1.0 && git push origin securefile/v0.1.0
 #
 # Any v0.x.y tag, and any tag with a pre-release suffix (v1.2.0-rc.1), is published as a GitHub
@@ -48,6 +59,16 @@ on:
       - "cache/azurekeyvault/v*.*.*"
       - "cache/googlesecretmanager/v*.*.*"
       - "cache/hashicorpvault/v*.*.*"
+      - "cache/filepersecret/v*.*.*"
+      - "cache/jsonsecretsfile/v*.*.*"
+      - "pipeline/v*.*.*"
+      - "pipeline/awssecretsmanager/v*.*.*"
+      - "pipeline/azurekeyvault/v*.*.*"
+      - "pipeline/googlesecretmanager/v*.*.*"
+      - "pipeline/hashicorpvault/v*.*.*"
+      - "integration/configurationresolver/v*.*.*"
+      - "options/certificate/v*.*.*"
+      - "systemdcredentials/v*.*.*"
       - "securefile/v*.*.*"
 
 # Least privilege by default; each job asks for exactly what it needs below.
