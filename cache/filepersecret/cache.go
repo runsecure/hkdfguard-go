@@ -13,8 +13,8 @@ import (
 
 	"github.com/runsecure/hkdfguard-go"
 	"github.com/runsecure/hkdfguard-go/diagnostics"
+	"github.com/runsecure/hkdfguard-go/internal/cachevalue"
 	"github.com/runsecure/hkdfguard-go/securefile"
-	"go.opentelemetry.io/otel/metric"
 )
 
 // MaxNameLength is the longest name a secret's file can have.
@@ -130,7 +130,7 @@ func (c *Cache) decrypt(ctx context.Context, name string, result []byte) (int, e
 	if err != nil || !found {
 		return 0, err
 	}
-	return c.decryptValue(ctx, name, value, result)
+	return cachevalue.Decrypt(ctx, c.ring, name, value, result)
 }
 
 // MaxDecryptedLength is an upper bound on how many bytes Decrypt will write for name, loading its
@@ -142,18 +142,6 @@ func (c *Cache) MaxDecryptedLength(ctx context.Context, name string) (int, bool,
 		return 0, false, err
 	}
 	return len(value.Value), true, nil
-}
-
-func (c *Cache) decryptValue(ctx context.Context, name string, value *hkdfguard.KeyTrackingValue, result []byte) (int, error) {
-	aad, err := hkdfguard.ConfigurationAAD(name)
-	if err != nil {
-		return 0, err
-	}
-	key, err := c.ring.Get(ctx, value.KeyVersion)
-	if err != nil {
-		return 0, err
-	}
-	return key.Decrypt(ctx, value.Value, aad, result)
 }
 
 // value is the cached value for name, loading it from its file on a miss; found is false if name
@@ -187,14 +175,14 @@ func (c *Cache) load(ctx context.Context, name string) (*hkdfguard.KeyTrackingVa
 	if err != nil {
 		diagnostics.RecordError(span, err)
 		diagnostics.OperationFailed(ctx, c.logger, diagnostics.SpanCachePopulate, err)
-		recordPopulate(ctx, diagnostics.ResultError)
+		cachevalue.RecordPopulate(ctx, diagnostics.ResultError)
 		return nil, false, err
 	}
 	if !found {
-		recordPopulate(ctx, diagnostics.ResultNotFound)
+		cachevalue.RecordPopulate(ctx, diagnostics.ResultNotFound)
 		return nil, false, nil
 	}
-	recordPopulate(ctx, diagnostics.ResultSuccess)
+	cachevalue.RecordPopulate(ctx, diagnostics.ResultSuccess)
 	stored, _ := c.values.LoadOrStore(name, value)
 	return stored.(*hkdfguard.KeyTrackingValue), true, nil
 }
@@ -218,23 +206,10 @@ func (c *Cache) readValue(ctx context.Context, name string) (*hkdfguard.KeyTrack
 	if err != nil {
 		return nil, false, err
 	}
-	if err := c.authenticate(ctx, name, &value); err != nil {
+	// Only a value that authenticates under name - and under a key version the ring holds - is
+	// ever cached.
+	if err := cachevalue.Authenticate(ctx, c.ring, name, &value); err != nil {
 		return nil, false, err
 	}
 	return &value, true, nil
-}
-
-// authenticate decrypts value once into a buffer that is zeroed at once, so only a value that
-// authenticates under name - and under a key version the ring holds - is ever cached. AEAD
-// ciphertext is always at least as long as its plaintext, so the ciphertext's length is room enough.
-func (c *Cache) authenticate(ctx context.Context, name string, value *hkdfguard.KeyTrackingValue) error {
-	plaintext := make([]byte, len(value.Value))
-	defer hkdfguard.Wipe(plaintext)
-	_, err := c.decryptValue(ctx, name, value, plaintext)
-	return err
-}
-
-func recordPopulate(ctx context.Context, result string) {
-	diagnostics.CacheOperations().Add(ctx, 1, metric.WithAttributes(
-		diagnostics.AttrOperationName.String(diagnostics.SpanCachePopulate), diagnostics.AttrResult.String(result)))
 }

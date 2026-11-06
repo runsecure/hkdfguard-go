@@ -27,6 +27,7 @@ import (
 	"github.com/runsecure/hkdfguard-go/cryptoprovider/aesgcm256"
 	"github.com/runsecure/hkdfguard-go/dek"
 	"github.com/runsecure/hkdfguard-go/diagnostics"
+	"github.com/runsecure/hkdfguard-go/internal/cachevalue"
 	"github.com/runsecure/hkdfguard-go/pipeline"
 	"github.com/runsecure/hkdfguard-go/securefile"
 )
@@ -530,7 +531,7 @@ func TestALookupWaitingOnAnotherLoad_TakesWhatItLoaded(t *testing.T) {
 			done <- ""
 			return
 		}
-		written, _ := c.decryptValue(t.Context(), "item", (*n)["ITEM"], result)
+		written, _ := cachevalue.Decrypt(t.Context(), c.ring, "item", (*n)["ITEM"], result)
 		done <- string(result[:written])
 	}()
 

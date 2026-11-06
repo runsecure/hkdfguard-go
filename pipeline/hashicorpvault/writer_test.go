@@ -13,6 +13,7 @@ import (
 	"github.com/hashicorp/vault/api"
 
 	"github.com/runsecure/hkdfguard-go"
+	"github.com/runsecure/hkdfguard-go/internal/vaultcheck"
 	"github.com/runsecure/hkdfguard-go/pipeline"
 	"github.com/runsecure/hkdfguard-go/pipeline/internal/pipelinetest"
 )
@@ -296,7 +297,7 @@ func TestDisableRedirects_CanBeReadFromThisVersionOfTheClient(t *testing.T) {
 	vault := newFakeVault(t)
 	for _, want := range []bool{true, false} {
 		client := newClient(t, vault.server.URL, func(config *api.Config) { config.DisableRedirects = want })
-		if disables, known := disablesRedirects(client); !known || disables != want {
+		if disables, known := vaultcheck.DisablesRedirects(client); !known || disables != want {
 			t.Fatalf("want %v: got %v, known %v", want, disables, known)
 		}
 	}

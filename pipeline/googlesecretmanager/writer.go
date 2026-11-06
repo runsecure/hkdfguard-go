@@ -2,8 +2,6 @@ package googlesecretmanager
 
 import (
 	"context"
-	"hash/crc32"
-	"strings"
 
 	secretmanager "cloud.google.com/go/secretmanager/apiv1"
 	"cloud.google.com/go/secretmanager/apiv1/secretmanagerpb"
@@ -13,11 +11,12 @@ import (
 	"google.golang.org/grpc/status"
 
 	"github.com/runsecure/hkdfguard-go"
+	"github.com/runsecure/hkdfguard-go/internal/gsmcheck"
 	"github.com/runsecure/hkdfguard-go/pipeline"
 )
 
 // MaxSecretNameLength is the longest ID Secret Manager accepts for a secret.
-const MaxSecretNameLength = 255
+const MaxSecretNameLength = gsmcheck.MaxSecretNameLength
 
 // Client is what the writer needs of a Secret Manager client: the one call it makes, as
 // cloud.google.com/go/secretmanager/apiv1 defines it. A *secretmanager.Client is one - over gRPC
@@ -29,8 +28,6 @@ type Client interface {
 }
 
 var _ Client = (*secretmanager.Client)(nil)
-
-var castagnoli = crc32.MakeTable(crc32.Castagnoli)
 
 // New returns a *pipeline.Writer pulling secretNames from one Google Cloud project's Secret Manager
 // through client (a *secretmanager.Client), every value encrypted by protector - the Go port of the
@@ -81,7 +78,7 @@ func New(client Client, projectID string, protector hkdfguard.PipelineDataProtec
 	if client == nil {
 		return nil, invalidArgument("a Secret Manager client is required (a *secretmanager.Client).")
 	}
-	if !isProjectID(projectID) {
+	if !gsmcheck.IsProjectID(projectID) {
 		return nil, invalidArgument("'%s' isn't a Google Cloud project ID or number.", projectID)
 	}
 	writer, err := pipeline.New(protector, secretNames, &secretStore{
@@ -97,35 +94,7 @@ func New(client Client, projectID string, protector hkdfguard.PipelineDataProtec
 
 // IsValidSecretName reports whether Secret Manager accepts name as a secret ID: 1-255 ASCII letters,
 // digits, hyphens and underscores.
-func IsValidSecretName(name string) bool {
-	if name == "" || len(name) > MaxSecretNameLength {
-		return false
-	}
-	for i := 0; i < len(name); i++ {
-		if c := name[i]; !isASCIILetterOrDigit(c) && c != '-' && c != '_' {
-			return false
-		}
-	}
-	return true
-}
-
-// isProjectID reports whether id can be spliced into a resource name as its project: 1 or more
-// ASCII letters, digits, hyphens, dots and colons.
-func isProjectID(id string) bool {
-	if id == "" {
-		return false
-	}
-	for i := 0; i < len(id); i++ {
-		if c := id[i]; !isASCIILetterOrDigit(c) && c != '-' && c != '.' && c != ':' {
-			return false
-		}
-	}
-	return true
-}
-
-func isASCIILetterOrDigit(c byte) bool {
-	return 'a' <= c && c <= 'z' || 'A' <= c && c <= 'Z' || '0' <= c && c <= '9'
-}
+func IsValidSecretName(name string) bool { return gsmcheck.IsValidSecretName(name) }
 
 // secretStore is the pipeline.SecretStore the Writer reads through.
 type secretStore struct {
@@ -162,29 +131,15 @@ func (s *secretStore) ReadSecret(ctx context.Context, name string, secret *pipel
 	return secret.ProtectSecret(ctx, payload)
 }
 
-// checkResponse requires the response to be a version of the secret asked for (its project comes
-// back as a number, so only the secret ID can be compared), and its payload to match its checksum
-// when it has one.
+// checkResponse requires the response to be a version of the secret asked for, and its payload to
+// match its checksum when it has one (see gsmcheck.Response).
 func checkResponse(response *secretmanagerpb.AccessSecretVersionResponse, name string, payload []byte) error {
-	if secret, ok := secretOfVersion(response.GetName()); !ok || secret != name {
-		return invalidResponse("Secret Manager answered a request for secret '%s' with '%s'.", name, response.GetName())
+	var checksum *int64
+	if p := response.GetPayload(); p != nil {
+		checksum = p.DataCrc32C
 	}
-	if p := response.GetPayload(); p != nil && p.DataCrc32C != nil && *p.DataCrc32C != crc32c(payload) {
-		return invalidResponse("The payload of secret '%s' doesn't match its CRC32C: it was corrupted in transit.", name)
+	if reason := gsmcheck.Response(name, response.GetName(), checksum, payload); reason != "" {
+		return invalidResponse("%s", reason)
 	}
 	return nil
 }
-
-// secretOfVersion is the secret ID in a secret version's resource name,
-// projects/{project}/secrets/{secret}/versions/{version}; ok is false for anything else.
-func secretOfVersion(resourceName string) (string, bool) {
-	parts := strings.Split(resourceName, "/")
-	if len(parts) != 6 || parts[0] != "projects" || parts[2] != "secrets" || parts[4] != "versions" ||
-		parts[1] == "" || parts[3] == "" || parts[5] == "" {
-		return "", false
-	}
-	return parts[3], true
-}
-
-// crc32c is the CRC32C (Castagnoli) checksum of data, as Secret Manager checksums payloads.
-func crc32c(data []byte) int64 { return int64(crc32.Checksum(data, castagnoli)) }

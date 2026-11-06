@@ -10,7 +10,7 @@ import (
 
 	"github.com/runsecure/hkdfguard-go"
 	"github.com/runsecure/hkdfguard-go/diagnostics"
-	"go.opentelemetry.io/otel/metric"
+	"github.com/runsecure/hkdfguard-go/internal/cachevalue"
 )
 
 // KeySeparator separates a secret's name from a key it holds: "app-config#api-key".
@@ -301,11 +301,11 @@ func (c *RemoteCache) populate(ctx context.Context, secretEntry string) (bool, e
 	if err != nil {
 		diagnostics.RecordError(span, err)
 		diagnostics.OperationFailed(ctx, c.logger, diagnostics.SpanCachePopulate, err)
-		recordPopulate(ctx, diagnostics.ResultError)
+		cachevalue.RecordPopulate(ctx, diagnostics.ResultError)
 		return false, err
 	}
 	if len(sink.values) == 0 {
-		recordPopulate(ctx, diagnostics.ResultNotFound)
+		cachevalue.RecordPopulate(ctx, diagnostics.ResultNotFound)
 		return false, nil
 	}
 
@@ -313,7 +313,7 @@ func (c *RemoteCache) populate(ctx context.Context, secretEntry string) (bool, e
 	for entry, value := range sink.values {
 		c.store.entries.LoadOrStore(matchKey(entry), value)
 	}
-	recordPopulate(ctx, diagnostics.ResultSuccess)
+	cachevalue.RecordPopulate(ctx, diagnostics.ResultSuccess)
 	return true, nil
 }
 
@@ -326,9 +326,4 @@ func (c *RemoteCache) fetchInto(ctx context.Context, secret string, sink *Secret
 		}
 	}()
 	return c.secrets.Fetch(ctx, secret, sink)
-}
-
-func recordPopulate(ctx context.Context, result string) {
-	diagnostics.CacheOperations().Add(ctx, 1, metric.WithAttributes(
-		diagnostics.AttrOperationName.String(diagnostics.SpanCachePopulate), diagnostics.AttrResult.String(result)))
 }

@@ -19,6 +19,7 @@ import (
 	"github.com/runsecure/hkdfguard-go"
 	"github.com/runsecure/hkdfguard-go/cache"
 	"github.com/runsecure/hkdfguard-go/diagnostics"
+	"github.com/runsecure/hkdfguard-go/internal/gsmcheck"
 )
 
 // A key/value secret as AWS Secrets Manager's console stores one.
@@ -473,7 +474,7 @@ func TestNew_RejectsMissingArguments_AndProjectIDsThatCouldChangeTheResourcePath
 }
 
 func TestCRC32C_MatchesTheCastagnoliCheckValue(t *testing.T) {
-	if got := crc32c([]byte("123456789")); got != 0xE3069283 {
+	if got := gsmcheck.CRC32C([]byte("123456789")); got != 0xE3069283 {
 		t.Errorf("got %#x", got)
 	}
 }

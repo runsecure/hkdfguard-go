@@ -13,6 +13,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	"github.com/runsecure/hkdfguard-go"
+	"github.com/runsecure/hkdfguard-go/internal/gsmcheck"
 	"github.com/runsecure/hkdfguard-go/pipeline"
 	"github.com/runsecure/hkdfguard-go/pipeline/internal/pipelinetest"
 )
@@ -255,7 +256,7 @@ func TestNew_ChecksTheClientAndProject(t *testing.T) {
 }
 
 func TestCRC32C_IsCastagnolis(t *testing.T) {
-	if got := crc32c([]byte("123456789")); got != 0xE3069283 {
+	if got := gsmcheck.CRC32C([]byte("123456789")); got != 0xE3069283 {
 		t.Fatalf("crc32c = %#x; want 0xe3069283", got)
 	}
 }

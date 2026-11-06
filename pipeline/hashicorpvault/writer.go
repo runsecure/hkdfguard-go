@@ -10,6 +10,7 @@ import (
 	"github.com/hashicorp/vault/api"
 
 	"github.com/runsecure/hkdfguard-go"
+	"github.com/runsecure/hkdfguard-go/internal/vaultcheck"
 	"github.com/runsecure/hkdfguard-go/pipeline"
 )
 
@@ -106,21 +107,13 @@ func New(client *api.Client, protector hkdfguard.PipelineDataProtector, secretNa
 	if client == nil {
 		return nil, invalidArgument("a Vault client is required (an *api.Client).")
 	}
-	if err := checkAddress(client.Address()); err != nil {
-		return nil, err
-	}
-	if !options.AllowRedirects {
-		if err := checkRedirects(client); err != nil {
-			return nil, err
-		}
-	}
-
 	mountPath := options.MountPath
 	if mountPath == "" {
 		mountPath = defaultMountPath
 	}
-	if !isValidPath(mountPath) {
-		return nil, invalidArgument("the mount path '%s' isn't a Vault path: '/'-separated segments of ASCII letters, digits, '-', '_' and '.', none \".\" or \"..\".", mountPath)
+	httpClient := func() *http.Client { return client.CloneConfig().HttpClient }
+	if reason := vaultcheck.Check(client.Address(), client, httpClient, options.AllowRedirects, mountPath); reason != "" {
+		return nil, invalidArgument("%s", reason)
 	}
 	key := options.DefaultKey
 	if key == "" {
@@ -147,7 +140,7 @@ func New(client *api.Client, protector hkdfguard.PipelineDataProtector, secretNa
 // letters, digits, '-', '_' and '.', no segment "." or "..", at most MaxSecretNameLength
 // characters. A key to read follows it in a secret name, after '#'.
 func IsValidSecretName(name string) bool {
-	return name != "" && len(name) <= MaxSecretNameLength && isValidPath(name)
+	return name != "" && len(name) <= MaxSecretNameLength && vaultcheck.IsValidPath(name)
 }
 
 // IsValidName implements pipeline.SecretStore.

@@ -16,6 +16,7 @@ import (
 
 	"github.com/runsecure/hkdfguard-go/cache"
 	"github.com/runsecure/hkdfguard-go/diagnostics"
+	"github.com/runsecure/hkdfguard-go/internal/vaultcheck"
 )
 
 // newCache is a cache over vault's KV engine, through a client made as newClient makes one.
@@ -464,7 +465,7 @@ func TestDisableRedirects_CanBeReadFromThisVersionOfTheClient(t *testing.T) {
 	vault := newFakeVault(t)
 	for _, want := range []bool{true, false} {
 		client := newClient(t, vault.server.URL, func(config *api.Config) { config.DisableRedirects = want })
-		if disables, known := disablesRedirects(client); !known || disables != want {
+		if disables, known := vaultcheck.DisablesRedirects(client); !known || disables != want {
 			t.Fatalf("want %v: got %v, known %v", want, disables, known)
 		}
 	}
