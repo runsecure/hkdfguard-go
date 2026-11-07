@@ -661,7 +661,10 @@ limit, read at most one byte past whatever the file reports: the port of the .NE
 - **Linux and Apple silicon macOS:** it and every directory above it must be owned by root or a
   trusted user and writable by nobody else (by its group only if that group is trusted); only
   symbolic links a trusted user owns are followed, and the resolved path is opened with
-  `O_NOFOLLOW` and must still be a regular file.
+  `O_NOFOLLOW` and must still be a regular file. ACL write grants count too: on Linux every named
+  user and group a group-writable item's POSIX access ACL lets write must be trusted; on macOS
+  every user and group an allow entry of any item's extended ACL (`chmod +a`) lets write, delete,
+  rewrite the ACL or take ownership must be, so `everyone allow write` is refused.
 - **Everywhere, for a key file:** 1 to `hkdfguard.MaxWrappedKeyBytes` bytes, and not what looks
   like an unwrapped key (32 raw bytes, optionally followed by one line ending (LF or CRLF), or its
   hex or base64). A trusted file is held only to its caller's limit, and may be empty.

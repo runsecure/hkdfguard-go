@@ -12,6 +12,7 @@ import (
 	"github.com/Azure/azure-sdk-for-go/sdk/security/keyvault/azkeys"
 
 	"github.com/runsecure/hkdfguard-go"
+	"github.com/runsecure/hkdfguard-go/diagnostics"
 	"github.com/runsecure/hkdfguard-go/internal/kmswrap"
 	"github.com/runsecure/hkdfguard-go/securefile"
 )
@@ -39,7 +40,9 @@ type Options struct {
 
 	// ClientOptions configure every Key Vault client the wrapper creates - retries, transport,
 	// logging, the API version, challenge resource verification; nil is the SDK's defaults. They are
-	// copied by New.
+	// copied by New. Logging.IncludeBody is honoured only while sensitive logging is on for
+	// diagnostics.KeyWrapping: wrap and unwrap bodies carry the plaintext DEK, so with it on, the DEK
+	// reaches the log. Turn it on only to debug, on a key you will rotate.
 	ClientOptions *azkeys.ClientOptions
 }
 
@@ -88,8 +91,8 @@ type KeyWrapper struct {
 	signingKeyID  string
 	wrappingKey   keyID
 	signingKey    keyID
-	wrapClient    *azkeys.Client
-	signClient    *azkeys.Client
+	wrapClient    clients
+	signClient    clients
 	context       []byte
 	keyFileTrust  securefile.KeyFileTrust
 }
@@ -133,14 +136,14 @@ func New(wrappingKeyID, signingKeyID string, credential azcore.TokenCredential, 
 		return nil, err
 	}
 
-	wrapClient, err := newClient(wrappingKey.vault, credential, options.ClientOptions)
+	wrapClient, err := newClients(wrappingKey.vault, credential, options.ClientOptions)
 	if err != nil {
 		return nil, err
 	}
 	// One client per vault: each learns its vault's authentication challenge once.
 	signClient := wrapClient
 	if signingKey.vault != wrappingKey.vault {
-		if signClient, err = newClient(signingKey.vault, credential, options.ClientOptions); err != nil {
+		if signClient, err = newClients(signingKey.vault, credential, options.ClientOptions); err != nil {
 			return nil, err
 		}
 	}
@@ -156,13 +159,38 @@ func New(wrappingKeyID, signingKeyID string, credential azcore.TokenCredential, 
 	}, nil
 }
 
-// newClient is a Key Vault client for vault, given its own copy of the options.
-func newClient(vault string, credential azcore.TokenCredential, options *azkeys.ClientOptions) (*azkeys.Client, error) {
+// clients are one vault's Key Vault clients: one that never logs request or response bodies, and,
+// when the options ask for bodies to be logged, one that does - used only while sensitive logging is
+// on for diagnostics.KeyWrapping, since wrap and unwrap bodies carry the plaintext DEK.
+type clients struct {
+	quiet      *azkeys.Client
+	withBodies *azkeys.Client // nil unless the options set Logging.IncludeBody
+}
+
+// client is the client a call goes through, decided on every call so turning sensitive logging off
+// takes effect at once.
+func (c clients) client() *azkeys.Client {
+	if c.withBodies != nil && diagnostics.KeyWrapping.SensitiveLoggingEnabled() {
+		return c.withBodies
+	}
+	return c.quiet
+}
+
+// newClients is vault's clients, each given its own copy of the options.
+func newClients(vault string, credential azcore.TokenCredential, options *azkeys.ClientOptions) (clients, error) {
 	var copied azkeys.ClientOptions
 	if options != nil {
 		copied = *options
 	}
-	return azkeys.NewClient(vault, credential, &copied)
+	includeBody := copied.Logging.IncludeBody
+	copied.Logging.IncludeBody = false
+	quiet, err := azkeys.NewClient(vault, credential, &copied)
+	if err != nil || !includeBody {
+		return clients{quiet: quiet}, err
+	}
+	copied.Logging.IncludeBody = true
+	withBodies, err := azkeys.NewClient(vault, credential, &copied)
+	return clients{quiet: quiet, withBodies: withBodies}, err
 }
 
 // WrappingKeyID is the RSA key that wraps every DEK, as given to New.
@@ -205,7 +233,7 @@ func (w *KeyWrapper) unwrap(ctx context.Context, wrapped, result []byte) (int, e
 	// The signature first: nothing reaches unwrapKey that a principal allowed to sign didn't make.
 	digest := sha256.Sum256(signedData(envelope[:p.unsignedLength], w.context))
 	signedBy := w.signingKey.withVersion(p.signingKeyVersion)
-	verified, err := w.signClient.Verify(ctx, signedBy.name, signedBy.version, azkeys.VerifyParameters{
+	verified, err := w.signClient.client().Verify(ctx, signedBy.name, signedBy.version, azkeys.VerifyParameters{
 		Algorithm: to.Ptr(azkeys.SignatureAlgorithmES256),
 		Digest:    digest[:],
 		Signature: p.signature,
@@ -219,7 +247,7 @@ func (w *KeyWrapper) unwrap(ctx context.Context, wrapped, result []byte) (int, e
 	}
 
 	wrappedBy := w.wrappingKey.withVersion(p.wrappingKeyVersion)
-	unwrapped, err := w.wrapClient.UnwrapKey(ctx, wrappedBy.name, wrappedBy.version, azkeys.KeyOperationParameters{
+	unwrapped, err := w.wrapClient.client().UnwrapKey(ctx, wrappedBy.name, wrappedBy.version, azkeys.KeyOperationParameters{
 		Algorithm: to.Ptr(azkeys.EncryptionAlgorithmRSAOAEP256),
 		Value:     p.wrappedDEK,
 	}, nil)
@@ -265,7 +293,7 @@ func (w *KeyWrapper) ReadKeyFile(ctx context.Context, path string) ([]byte, erro
 }
 
 func (w *KeyWrapper) wrapOwned(ctx context.Context, key, result []byte) (int, error) {
-	wrapped, err := w.wrapClient.WrapKey(ctx, w.wrappingKey.name, w.wrappingKey.version, azkeys.KeyOperationParameters{
+	wrapped, err := w.wrapClient.client().WrapKey(ctx, w.wrappingKey.name, w.wrappingKey.version, azkeys.KeyOperationParameters{
 		Algorithm: to.Ptr(azkeys.EncryptionAlgorithmRSAOAEP256),
 		Value:     key,
 	}, nil)
@@ -287,7 +315,7 @@ func (w *KeyWrapper) wrapOwned(ctx context.Context, key, result []byte) (int, er
 
 	// ES256 signs the SHA-256 digest of the data, which Key Vault takes already computed.
 	digest := sha256.Sum256(signedData(unsigned, w.context))
-	signed, err := w.signClient.Sign(ctx, w.signingKey.name, w.signingKey.version, azkeys.SignParameters{
+	signed, err := w.signClient.client().Sign(ctx, w.signingKey.name, w.signingKey.version, azkeys.SignParameters{
 		Algorithm: to.Ptr(azkeys.SignatureAlgorithmES256),
 		Value:     digest[:],
 	}, nil)

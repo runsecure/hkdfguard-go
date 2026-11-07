@@ -719,3 +719,28 @@ func TestNew_ValidatesItsArguments(t *testing.T) {
 		t.Errorf("the maximum file length is %d; want %d", c.maxFileLength, DefaultMaxFileLength)
 	}
 }
+
+func TestAFailedLoad_IsLoggedWithoutTheMembersName_WithSensitiveLoggingOff(t *testing.T) {
+	original := diagnostics.Cache.SensitiveLoggingEnabled()
+	diagnostics.Cache.SetSensitiveLogging(false)
+	t.Cleanup(func() { diagnostics.Cache.SetSensitiveLogging(original) })
+	f := newFixture(t)
+	value := f.encrypt("tenant-42-password", "value")
+	f.writeRaw(`{"tenant-42-password":"` + value + `","TENANT-42-PASSWORD":"` + value + `"}`)
+	handler := &capturingHandler{}
+	c := f.newCacheWith(f.trust, Options{Logger: slog.New(handler)})
+
+	_, err := c.Decrypt(t.Context(), "tenant-42-password", make([]byte, 16))
+	if !errors.Is(err, ErrInvalidData) || !strings.Contains(err.Error(), "TENANT-42-PASSWORD") {
+		t.Fatalf("got %v; the caller's error should still name the member", err)
+	}
+	if len(handler.records) != 1 {
+		t.Fatalf("logged %q; want the one failure", handler.messages())
+	}
+	handler.records[0].Attrs(func(a slog.Attr) bool {
+		if text := a.Value.String(); strings.Contains(strings.ToLower(text), "tenant-42") {
+			t.Errorf("%s=%q names the member", a.Key, text)
+		}
+		return true
+	})
+}

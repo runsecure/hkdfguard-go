@@ -162,7 +162,7 @@ func (c *ResolvingProtectedCacheCollection) Decrypt(ctx context.Context, name st
 
 	n, err := c.decrypt(ctx, name, result)
 	if err != nil {
-		diagnostics.RecordError(span, err)
+		diagnostics.RecordError(span, telemetry.LoggedError(err, name))
 	}
 	return n, err
 }

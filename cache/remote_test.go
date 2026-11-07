@@ -3,6 +3,7 @@ package cache
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"github.com/runsecure/hkdfguard-go"
+	"github.com/runsecure/hkdfguard-go/diagnostics"
 )
 
 // fakeSecrets is a SecretStore over an in-memory map: each secret's value is handed over with
@@ -355,4 +357,39 @@ func (f storeFunc) Fetch(ctx context.Context, name string, sink *SecretSink) err
 func newRingOnly(t *testing.T) hkdfguard.KeyRing {
 	ring, _ := newRing(t, 1)
 	return ring
+}
+
+func TestRemoteCache_AFailedFetch_IsLoggedWithoutTheName_UnlessSensitiveLoggingIsOn(t *testing.T) {
+	failing := storeFunc(func(_ context.Context, name string, _ *SecretSink) error {
+		// As the stores' own errors do: quote the name, and the request URL holding it.
+		return fmt.Errorf("couldn't read '%s': GET https://store/v1/%s: 503", name, name)
+	})
+	for _, sensitive := range []bool{false, true} {
+		original := diagnostics.Cache.SensitiveLoggingEnabled()
+		diagnostics.Cache.SetSensitiveLogging(sensitive)
+		logger, logs := newLogger()
+		ring, _ := newRing(t, 1)
+		c, err := NewRemote(ring, failing, RemoteOptions{Matching: Exact, Logger: logger})
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		_, err = c.Decrypt(bg, "prod/Db#Api-Key", make([]byte, 8))
+		diagnostics.Cache.SetSensitiveLogging(original)
+		if err == nil || !strings.Contains(err.Error(), "prod/Db") {
+			t.Fatalf("the caller's error should still name the secret: %v", err)
+		}
+		failures := logs.withEventID(2)
+		if len(failures) != 1 {
+			t.Fatalf("sensitive=%v: %d failures logged", sensitive, len(failures))
+		}
+		logged := attrText(failures[0], "error")
+		named := strings.Contains(strings.ToLower(logged), "prod/db") || strings.Contains(logged, "prod/!db")
+		if named != sensitive {
+			t.Errorf("sensitive=%v: logged %q", sensitive, logged)
+		}
+		if !sensitive && !strings.Contains(logged, "503") {
+			t.Errorf("the redacted failure lost its cause: %q", logged)
+		}
+	}
 }

@@ -128,7 +128,7 @@ func (p *PipelineDataProtector) Encrypt(ctx context.Context, plaintext []byte, s
 
 	formatted, err := p.encrypt(ctx, plaintext, secretIdentifier)
 	if err != nil {
-		diagnostics.RecordError(span, err)
+		diagnostics.RecordError(span, telemetry.LoggedError(err, secretIdentifier))
 	}
 	return formatted, err
 }
@@ -168,7 +168,7 @@ func (p *PipelineDataProtector) Decrypt(ctx context.Context, encrypted, secretId
 
 	n, err := p.decrypt(ctx, encrypted, secretIdentifier, result)
 	if err != nil {
-		diagnostics.RecordError(span, err)
+		diagnostics.RecordError(span, telemetry.LoggedError(err, secretIdentifier))
 	}
 	return n, err
 }

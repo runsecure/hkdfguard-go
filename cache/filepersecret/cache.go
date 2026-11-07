@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 
 	"github.com/runsecure/hkdfguard-go"
@@ -89,9 +90,19 @@ func New(folderPath string, trust securefile.KeyFileTrust, ring hkdfguard.KeyRin
 func (c *Cache) FolderPath() string { return c.folderPath }
 
 // IsValidName reports whether name can be a secret's file name: 1-MaxNameLength ASCII letters,
-// digits, '-', '_' and '.', not starting with '.'.
+// digits, '-', '_' and '.', neither starting nor ending with '.', and not a name Windows reserves for a
+// device (see isReservedDeviceName).
+//
+// The rule is the same on every platform, since files written on one are often read on another
+// (a pipeline's tar unpacked on a Windows host, say), and Windows doesn't open the file it is asked
+// for under either kind of name: it drops a trailing '.', so "item." is the file "item" - two names
+// that would share one file - and it opens a device for a reserved name, so a secret named "nul"
+// would be written nowhere and never found.
 func IsValidName(name string) bool {
-	if name == "" || len(name) > MaxNameLength || name[0] == '.' {
+	if name == "" || len(name) > MaxNameLength || name[0] == '.' || name[len(name)-1] == '.' {
+		return false
+	}
+	if isReservedDeviceName(name) {
 		return false
 	}
 	for i := 0; i < len(name); i++ {
@@ -120,7 +131,7 @@ func (c *Cache) Decrypt(ctx context.Context, name string, result []byte) (int, e
 
 	n, err := c.decrypt(ctx, name, result)
 	if err != nil {
-		diagnostics.RecordError(span, err)
+		diagnostics.RecordError(span, telemetry.LoggedError(err, name))
 	}
 	return n, err
 }
@@ -173,8 +184,10 @@ func (c *Cache) load(ctx context.Context, name string) (*hkdfguard.KeyTrackingVa
 
 	value, found, err := c.readValue(ctx, name)
 	if err != nil {
-		diagnostics.RecordError(span, err)
-		diagnostics.OperationFailed(ctx, c.logger, diagnostics.SpanCachePopulate, err)
+		// A securefile error quotes the file's path, which ends in the name.
+		logged := telemetry.LoggedError(err, name)
+		diagnostics.RecordError(span, logged)
+		diagnostics.OperationFailed(ctx, c.logger, diagnostics.SpanCachePopulate, logged)
 		cachevalue.RecordPopulate(ctx, diagnostics.ResultError)
 		return nil, false, err
 	}
@@ -212,4 +225,25 @@ func (c *Cache) readValue(ctx context.Context, name string) (*hkdfguard.KeyTrack
 		return nil, false, err
 	}
 	return &value, true, nil
+}
+
+// isReservedDeviceName reports whether Windows reserves name for a device: its stem - what comes
+// before its first '.' - is CON, PRN, AUX or NUL, or COM or LPT followed by one digit, in any case.
+// Windows 10 and Windows Server open the device even with an extension ("nul.txt"); later Windows 11
+// builds open a file for some of these, but not for every one, so every one is refused. Names
+// holding '$' (CONIN$, CONOUT$, CLOCK$) and the superscript-digit forms (COM¹) are already refused
+// by the character rule.
+func isReservedDeviceName(name string) bool {
+	stem, _, _ := strings.Cut(name, ".")
+	switch strings.ToUpper(stem) {
+	case "CON", "PRN", "AUX", "NUL":
+		return true
+	}
+	if len(stem) == 4 && '0' <= stem[3] && stem[3] <= '9' {
+		switch strings.ToUpper(stem[:3]) {
+		case "COM", "LPT":
+			return true
+		}
+	}
+	return false
 }

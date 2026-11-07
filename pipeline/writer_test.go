@@ -302,3 +302,18 @@ func TestReadBody_RefusesABodyOfTheMaximumOrMore_OrNone(t *testing.T) {
 		t.Errorf("a failing body: %q, %v; want nil and its error", read, err)
 	}
 }
+
+func TestNamesWindowsWouldOpenAsAnotherFileOrADevice_AreRefused(t *testing.T) {
+	for _, names := range [][]string{{"app#v."}, {"nul"}, {"COM1"}, {"aux"}, {"app", "app#v."}} {
+		if _, err := pipeline.New(pipelinetest.NewProtector(t), names, newFakeStore(), pipeline.Options{}); !errors.Is(err, pipeline.ErrInvalidArgument) {
+			t.Errorf("New(%q): %v; want pipeline.ErrInvalidArgument", names, err)
+		}
+	}
+}
+
+func TestADeviceNameInsideALongerFileName_IsAnOrdinaryName(t *testing.T) {
+	// "app#COM1" is the file app__COM1, whose stem isn't a device's.
+	if _, err := pipeline.New(pipelinetest.NewProtector(t), []string{"app#COM1", "nul/app"}, newFakeStore(), pipeline.Options{}); err != nil {
+		t.Errorf("New: %v", err)
+	}
+}

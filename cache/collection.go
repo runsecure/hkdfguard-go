@@ -57,7 +57,8 @@ func (c *Collection) Decrypt(ctx context.Context, name string, result []byte) (i
 	for _, source := range c.snapshot() {
 		n, err := source.Decrypt(ctx, name, result)
 		if err != nil {
-			diagnostics.RecordError(span, err)
+			// The source's error may quote the name, and only its source can say how it derived others.
+			diagnostics.RecordError(span, telemetry.LoggedError(err, name))
 			return 0, err
 		}
 		if n > 0 {

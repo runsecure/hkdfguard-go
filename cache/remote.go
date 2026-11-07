@@ -129,7 +129,7 @@ func NewRemote(ring hkdfguard.KeyRing, secrets SecretStore, options RemoteOption
 		defaultKey: options.DefaultKey,
 		logger:     options.Logger,
 	}
-	c.store = store{ring: ring, logger: options.Logger, populate: c.populateShared}
+	c.store = store{ring: ring, logger: options.Logger, populate: c.populateShared, names: c.namesIn}
 	return c, nil
 }
 
@@ -232,6 +232,17 @@ func unescapeCase(entry string) string {
 	return b.String()
 }
 
+// namesIn is every name a failure looking up entry - a secret's entry name, and possibly '#' and a
+// case-escaped key - could quote: the entry name, the secret's own name, and the key, as given.
+func (c *RemoteCache) namesIn(entry string) []string {
+	secretEntry, key, hasKey := strings.Cut(entry, string(KeySeparator))
+	names := []string{entry, secretEntry, c.secretName(secretEntry)}
+	if hasKey {
+		names = append(names, key, unescapeCase(key))
+	}
+	return names
+}
+
 // populateShared runs the fetch of the secret entryName belongs to, or waits for the one already
 // running; the store then looks entryName up again.
 func (c *RemoteCache) populateShared(ctx context.Context, entryName string) (bool, error) {
@@ -254,8 +265,9 @@ func (c *RemoteCache) populate(ctx context.Context, secretEntry string) (bool, e
 	err := c.fetchInto(ctx, secret, sink)
 	sink.close()
 	if err != nil {
-		diagnostics.RecordError(span, err)
-		diagnostics.OperationFailed(ctx, c.logger, diagnostics.SpanCachePopulate, err)
+		logged := telemetry.LoggedError(err, c.namesIn(secretEntry)...)
+		diagnostics.RecordError(span, logged)
+		diagnostics.OperationFailed(ctx, c.logger, diagnostics.SpanCachePopulate, logged)
 		cachevalue.RecordPopulate(ctx, diagnostics.ResultError)
 		return false, err
 	}

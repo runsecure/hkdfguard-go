@@ -79,7 +79,7 @@ func (r *Reader) TryDecrypt(ctx context.Context, name string, result []byte) (n 
 			return n, true, nil
 		}
 	}
-	diagnostics.RecordError(span, err)
+	diagnostics.RecordError(span, telemetry.LoggedError(err, name))
 	return 0, true, err
 }
 

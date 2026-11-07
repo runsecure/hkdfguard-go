@@ -110,8 +110,9 @@ func (c *Cache) write(ctx context.Context, operation, name string, plaintext []b
 	result := diagnostics.ResultSuccess
 	if err != nil {
 		result = diagnostics.ResultError
-		diagnostics.RecordError(span, err)
-		diagnostics.OperationFailed(ctx, c.logger, operation, err)
+		logged := telemetry.LoggedError(err, name)
+		diagnostics.RecordError(span, logged)
+		diagnostics.OperationFailed(ctx, c.logger, operation, logged)
 	} else if telemetry.SensitiveLoggingEnabled() {
 		// Only once it has: a record that says "completed" must not precede the outcome.
 		diagnostics.SensitiveOperationLogged(ctx, c.logger, operation, name)

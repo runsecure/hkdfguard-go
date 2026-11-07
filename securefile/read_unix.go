@@ -102,8 +102,9 @@ func lstatStatus(path string) (unixFileStatus, bool, error) {
 		fileType = unixSymbolicLink
 	}
 	result := unixFileStatus{ownerID: status.Uid, groupID: status.Gid, mode: mode & 0o7777, fileType: fileType}
-	// Only a group-writable mode can hide an ACL write grant: the bit is then the ACL's mask.
-	if fileType != unixSymbolicLink && result.mode&groupWrite != 0 {
+	// On Linux only a group-writable mode can hide an ACL write grant: the bit is then the ACL's
+	// mask. A macOS extended ACL is independent of the mode, so it is read whatever the mode.
+	if fileType != unixSymbolicLink && (aclReadWhateverTheMode || result.mode&groupWrite != 0) {
 		writers, err := accessACLWriters(path)
 		if err != nil {
 			return unixFileStatus{}, false, err

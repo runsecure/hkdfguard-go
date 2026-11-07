@@ -78,6 +78,9 @@ type store struct {
 	// fetches shares one Source fetch between concurrent misses on one name.
 	fetches sharedFetches
 
+	// names, when set, is every name a failure looking up an entry name could quote (see namesIn).
+	names func(name string) []string
+
 	// Entries keyed by matchKey(name), each a *hkdfguard.KeyTrackingValue that was encrypted for
 	// that same name. Keying by the ASCII-upper-cased name is exactly the rule CacheAAD applies,
 	// so every spelling that reaches an entry also authenticates against it.
@@ -170,8 +173,9 @@ func (s *store) fetchFromSource(ctx context.Context, key, name string) (bool, er
 
 	populated, err := s.storeFromSource(ctx, key, name)
 	if err != nil {
-		diagnostics.RecordError(span, err)
-		diagnostics.OperationFailed(ctx, s.logger, diagnostics.SpanCachePopulate, err)
+		logged := telemetry.LoggedError(err, s.namesIn(name)...)
+		diagnostics.RecordError(span, logged)
+		diagnostics.OperationFailed(ctx, s.logger, diagnostics.SpanCachePopulate, logged)
 		cachevalue.RecordPopulate(ctx, diagnostics.ResultError)
 		return false, err
 	}
@@ -227,7 +231,7 @@ func (s *store) decrypt(ctx context.Context, name string, result []byte) (int, e
 
 	n, err := s.decryptEntry(ctx, name, result)
 	if err != nil {
-		diagnostics.RecordError(span, err)
+		diagnostics.RecordError(span, telemetry.LoggedError(err, s.namesIn(name)...))
 	}
 	diagnostics.CacheOperations().Add(ctx, 1, metric.WithAttributes(
 		diagnostics.AttrOperationName.String(diagnostics.SpanCacheDecrypt), diagnostics.AttrResult.String(decryptResult(n, err))))
@@ -252,9 +256,19 @@ func (s *store) decryptEntry(ctx context.Context, name string, result []byte) (i
 	}
 	n, err := s.decryptStored(ctx, name, entry, result)
 	if err != nil {
-		diagnostics.OperationFailed(ctx, s.logger, diagnostics.SpanCacheDecrypt, err)
+		diagnostics.OperationFailed(ctx, s.logger, diagnostics.SpanCacheDecrypt, diagnostics.Cache.LoggedError(err, s.namesIn(name)...))
 	}
 	return n, err
+}
+
+// namesIn is every name a failure looking up name could quote, for diagnostics.Component.LoggedError
+// to remove: name itself, and whatever names the cache derives it from (a RemoteCache's secret and
+// key).
+func (s *store) namesIn(name string) []string {
+	if s.names != nil {
+		return s.names(name)
+	}
+	return []string{name}
 }
 
 func (s *store) decryptStored(ctx context.Context, name string, entry *hkdfguard.KeyTrackingValue, result []byte) (int, error) {

@@ -135,7 +135,7 @@ func (c *Cache) Decrypt(ctx context.Context, name string, result []byte) (int, e
 
 	n, err := c.decrypt(ctx, name, result)
 	if err != nil {
-		diagnostics.RecordError(span, err)
+		diagnostics.RecordError(span, loggedError(err, name))
 	}
 	return n, err
 }
@@ -208,8 +208,9 @@ func (c *Cache) load(ctx context.Context) (*map[string]*hkdfguard.KeyTrackingVal
 
 	values, err := c.readValues(ctx)
 	if err != nil {
-		diagnostics.RecordError(span, err)
-		diagnostics.OperationFailed(ctx, c.logger, diagnostics.SpanCachePopulate, err)
+		logged := loggedError(err)
+		diagnostics.RecordError(span, logged)
+		diagnostics.OperationFailed(ctx, c.logger, diagnostics.SpanCachePopulate, logged)
 		cachevalue.RecordPopulate(ctx, diagnostics.ResultError)
 		return nil, err
 	}
@@ -282,7 +283,7 @@ func (c *Cache) parse(ctx context.Context, contents []byte) ([]member, error) {
 		}
 		name := token.(string)
 		if !filepersecret.IsValidName(name) {
-			return nil, c.invalid("names a secret '%s', which isn't a secret's name", name)
+			return nil, c.invalidMember(name, "names a secret '%s', which isn't a secret's name", name)
 		}
 
 		token, err = decoder.Token()
@@ -292,7 +293,7 @@ func (c *Cache) parse(ctx context.Context, contents []byte) ([]member, error) {
 		encrypted, _ := token.(string)
 		encrypted = strings.TrimSpace(encrypted)
 		if encrypted == "" {
-			return nil, c.invalid("holds no value for '%s': each must be a non-empty string", name)
+			return nil, c.invalidMember(name, "holds no value for '%s': each must be a non-empty string", name)
 		}
 		value, err := c.formatProvider.Parse(ctx, encrypted)
 		if err != nil {
@@ -300,7 +301,7 @@ func (c *Cache) parse(ctx context.Context, contents []byte) ([]member, error) {
 		}
 		folded := strings.ToUpper(name)
 		if _, twice := seen[folded]; twice {
-			return nil, c.invalid("names '%s' more than once", name)
+			return nil, c.invalidMember(name, "names '%s' more than once", name)
 		}
 		seen[folded] = struct{}{}
 		members = append(members, member{name: name, value: &value})
@@ -318,6 +319,31 @@ func (c *Cache) parse(ctx context.Context, contents []byte) ([]member, error) {
 
 func (c *Cache) invalid(format string, args ...any) error {
 	return fmt.Errorf("%w: the secrets file '%s' %s", ErrInvalidData, c.filePath, fmt.Sprintf(format, args...))
+}
+
+// invalidMember is c.invalid for a failure about the member named name, which its message quotes:
+// the name is kept so a logged failure can leave it out (see loggedError).
+func (c *Cache) invalidMember(name, format string, args ...any) error {
+	return &memberError{err: c.invalid(format, args...), name: name}
+}
+
+// memberError is a failure about one of the file's members, whose message quotes the member's name.
+type memberError struct {
+	err  error
+	name string
+}
+
+func (e *memberError) Error() string { return e.err.Error() }
+func (e *memberError) Unwrap() error { return e.err }
+
+// loggedError is err as a failure log or span may show it: without names - and without the name of
+// any member err is about - unless sensitive logging is on.
+func loggedError(err error, names ...string) error {
+	var member *memberError
+	if errors.As(err, &member) {
+		names = append(names, member.name)
+	}
+	return diagnostics.Cache.LoggedError(err, names...)
 }
 
 func (c *Cache) invalidJSON(err error) error {

@@ -3,6 +3,7 @@ package cache
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"strings"
 	"sync"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"github.com/runsecure/hkdfguard-go"
+	"github.com/runsecure/hkdfguard-go/diagnostics"
 )
 
 func newLogger() (*slog.Logger, *capturingHandler) {
@@ -211,5 +213,22 @@ func TestSourceFunc_AdaptsAFunction(t *testing.T) {
 
 	if got, _ := get(t, c, "x"); got != "value of x" {
 		t.Errorf("got %q", got)
+	}
+}
+
+func TestReadOnlyCache_AFailedFetch_IsLoggedWithoutTheName_WithSensitiveLoggingOff(t *testing.T) {
+	original := diagnostics.Cache.SensitiveLoggingEnabled()
+	diagnostics.Cache.SetSensitiveLogging(false)
+	t.Cleanup(func() { diagnostics.Cache.SetSensitiveLogging(original) })
+	logger, logs := newLogger()
+	ring, _ := newRing(t, 1)
+	c := NewReadOnly(ring, SourceFunc(func(_ context.Context, name string) ([]byte, bool, error) {
+		return nil, false, fmt.Errorf("no access to '%s'", name)
+	}), WithLogger(logger))
+
+	_, _ = c.Decrypt(bg, "tenant-42-password", make([]byte, 8))
+	failures := logs.withEventID(2)
+	if len(failures) != 1 || strings.Contains(attrText(failures[0], "error"), "tenant-42") {
+		t.Errorf("failures: %v, error %q", messages(failures), attrText(failures[0], "error"))
 	}
 }
