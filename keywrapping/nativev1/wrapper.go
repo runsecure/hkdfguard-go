@@ -165,14 +165,15 @@ func openKeyFile(library kmsLibrary, path string) ([]byte, error) {
 
 	buffer := make([]byte, hkdfguard.MaxWrappedKeyBytes)
 	status, read, err := library.openFile(path, buffer)
+	if err == nil && status != statusOK {
+		err = &KeyFileError{Path: path, Status: status, Description: library.describeStatus(status)}
+	} else if err == nil && (read <= 0 || int(read) > len(buffer)) {
+		err = fmt.Errorf("nativev1: native KMS open-file for '%s' reported %d bytes read into a %d-byte buffer", path, read, len(buffer))
+	}
 	if err != nil {
+		// The library may have read some of the file before refusing it, a raw key among them.
+		hkdfguard.Wipe(buffer)
 		return nil, err
-	}
-	if status != statusOK {
-		return nil, &KeyFileError{Path: path, Status: status, Description: library.describeStatus(status)}
-	}
-	if read <= 0 || int(read) > len(buffer) {
-		return nil, fmt.Errorf("nativev1: native KMS open-file for '%s' reported %d bytes read into a %d-byte buffer", path, read, len(buffer))
 	}
 	return buffer[:read:read], nil
 }

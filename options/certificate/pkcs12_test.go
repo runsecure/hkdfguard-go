@@ -14,6 +14,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/runsecure/hkdfguard-go"
 )
 
 // The PKCS#12 and encrypted PKCS#8 reader against files other tools wrote, in testdata:
@@ -174,6 +176,27 @@ func TestABERPfx_IsReadAsItsDERIs(t *testing.T) {
 		if _, err := berToDER(broken); err == nil {
 			t.Errorf("% x converted", broken)
 		}
+	}
+}
+
+// Values parsed from DER point into it, and are wiped with it; values parsed from a BER conversion
+// are copies, which the decoder must be told about to wipe them.
+func TestUnmarshalBERCloned_ReportsCopiesOnlyForBER(t *testing.T) {
+	der := readFixture(t, "openssl-aes.pfx")
+	var fromDER pfxPDU
+	if cloned, err := unmarshalBERCloned(der, &fromDER); err != nil || cloned {
+		t.Fatalf("DER: cloned %v, %v; want false, nil", cloned, err)
+	}
+	var fromBER pfxPDU
+	ber := toBER(t, der)
+	if cloned, err := unmarshalBERCloned(ber, &fromBER); err != nil || !cloned {
+		t.Fatalf("BER: cloned %v, %v; want true, nil", cloned, err)
+	}
+	// The clone is its own memory: wiping it leaves the file as it was.
+	before := append([]byte(nil), ber...)
+	hkdfguard.Wipe(fromBER.AuthSafe.Content.FullBytes)
+	if !bytes.Equal(ber, before) {
+		t.Fatal("the BER value aliases the file")
 	}
 }
 

@@ -270,6 +270,8 @@ func fromPKCS12(path string, password []byte, hasPassword bool) (*Certificate, e
 	if err != nil {
 		return nil, err
 	}
+	// The file holds the key: encrypted in a shrouded key bag, or not at all in a plain one.
+	defer hkdfguard.Wipe(data)
 	if !hasPassword {
 		password = nil
 	}

@@ -483,6 +483,8 @@ stdin: `WriteProtectedSecretFilesTo` as a PAX tar archive of the files (for
 `ssh -T host sudo -n tee /etc/app/secrets.json`). No key ring is involved: once the files are
 written, the protector's key goes to the native platform's wrap process - `WriteDEK` writes it to the
 wrap tool's stdin (`--dek-stdin`) from a buffer zeroed afterwards, or `KeyBase64` hands it over.
+Give `WriteDEK` the pipe itself, not a `*bufio.Writer` or other buffering writer, whose copy of the
+key nothing wipes.
 
 ```go
 protector, err := aesgcm256.NewPipelineDataProtector(dek.NewDefaultFormatProvider(), 3)
