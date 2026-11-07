@@ -200,6 +200,52 @@ func TestUnmarshalBERCloned_ReportsCopiesOnlyForBER(t *testing.T) {
 	}
 }
 
+// Growing a buffer zeroes the array it outgrows; appending within capacity leaves it be.
+func TestAppendWiping_ZeroesTheOutgrownArray(t *testing.T) {
+	dst := make([]byte, 0, 4)
+	dst = appendWiping(dst, []byte("key!"))
+	old := dst[:cap(dst)]
+	grown := appendWiping(dst, []byte("more key"))
+	if string(grown) != "key!more key" {
+		t.Fatalf("appended %q", grown)
+	}
+	if !bytes.Equal(old, make([]byte, len(old))) {
+		t.Fatalf("the outgrown array holds %q", old)
+	}
+
+	roomy := make([]byte, 0, 16)
+	roomy = appendWiping(roomy, []byte("abc"))
+	same := appendWiping(roomy, []byte("def"))
+	if &same[0] != &roomy[0] || string(same) != "abcdef" {
+		t.Fatal("an append within capacity moved or lost the text")
+	}
+}
+
+// The conversion wipes only buffers of its own: the BER it reads - the file, or contents the
+// decoder reads again for the next password - comes back as it was, success or failure.
+func TestBERToDER_NeverWritesItsInput(t *testing.T) {
+	ber := toBER(t, readFixture(t, "openssl-aes.pfx"))
+	before := bytes.Clone(ber)
+	out, err := berToDER(ber)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hkdfguard.Wipe(out)
+	if !bytes.Equal(ber, before) {
+		t.Fatal("converting changed the BER")
+	}
+
+	// Cut off part-way through, the conversion fails after converting some children.
+	truncated := bytes.Clone(ber[:len(ber)-3])
+	before = bytes.Clone(truncated)
+	if _, err := berToDER(truncated); err == nil {
+		t.Fatal("truncated BER converted")
+	}
+	if !bytes.Equal(truncated, before) {
+		t.Fatal("a failed conversion changed the BER")
+	}
+}
+
 // toBER rewrites DER's outermost SEQUENCE and the authenticated safe's OCTET STRING with
 // indefinite lengths, the OCTET STRING split into two constructed segments.
 func toBER(t *testing.T, der []byte) []byte {

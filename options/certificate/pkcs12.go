@@ -334,9 +334,8 @@ func decryptPKCS8(der, password []byte, budget *iterationBudget) (crypto.Signer,
 }
 
 // unmarshalBER parses der into out as encoding/asn1 does, and, if that fails, parses its BER
-// converted to DER: a file from a tool that writes BER. The converted copy is wiped; the
-// conversion's intermediate copies can't be, which matters only for decrypted contents written as
-// BER.
+// converted to DER: a file from a tool that writes BER. The converted copy is wiped, as berToDER
+// wipes every intermediate copy it makes; what out points into is cloned first.
 func unmarshalBER(der []byte, out any) error {
 	_, err := unmarshalBERCloned(der, out)
 	return err
