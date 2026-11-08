@@ -41,6 +41,7 @@ type fakeVault struct {
 
 	failWith int    // when set, an authorized Get Secret is answered with this status and an error body
 	rawBody  string // when set, an authorized Get Secret is answered with this body as it is
+	okStatus int    // when set, a secret found is answered with this status rather than 200
 	onGet    func() // runs inside every authorized Get Secret before it answers, e.g. to hold it open
 }
 
@@ -97,7 +98,7 @@ func (v *fakeVault) Do(req *http.Request) (*http.Response, error) {
 	name := path[1]
 	v.mu.Lock()
 	v.gets = append(v.gets, name)
-	onGet, failWith, rawBody := v.onGet, v.failWith, v.rawBody
+	onGet, failWith, rawBody, okStatus := v.onGet, v.failWith, v.rawBody, v.okStatus
 	value, found := v.secrets[strings.ToLower(name)]
 	v.mu.Unlock()
 	if onGet != nil {
@@ -121,7 +122,10 @@ func (v *fakeVault) Do(req *http.Request) (*http.Response, error) {
 	if err != nil {
 		return nil, err
 	}
-	return respond(req, http.StatusOK, string(body)), nil
+	if okStatus == 0 {
+		okStatus = http.StatusOK
+	}
+	return respond(req, okStatus, string(body)), nil
 }
 
 func respond(req *http.Request, status int, body string) *http.Response {

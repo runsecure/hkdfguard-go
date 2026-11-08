@@ -63,9 +63,54 @@ const (
 // alwaysTrusted are the principals every Windows key file may be owned and modified by.
 var alwaysTrusted = []string{sidSystem, sidAdministrators, sidTrustedInstaller}
 
-// neverTrusted are the groups every account, or every signed-in one, is in - Everyone,
-// Authenticated Users, Users, Interactive, Anonymous: trusting one trusts everybody.
-var neverTrusted = []string{"S-1-1-0", "S-1-5-11", "S-1-5-32-545", "S-1-5-4", "S-1-5-7"}
+// neverTrusted are the well-known groups every account, every signed-in one, or a whole class of
+// them is in: trusting one trusts everybody in it, an attacker among them.
+var neverTrusted = []string{
+	"S-1-1-0",      // Everyone
+	"S-1-2-0",      // LOCAL: anyone signed in at the machine
+	"S-1-2-1",      // CONSOLE LOGON
+	"S-1-5-1",      // DIALUP
+	"S-1-5-2",      // NETWORK: anyone signed in over the network
+	"S-1-5-3",      // BATCH
+	"S-1-5-4",      // INTERACTIVE
+	"S-1-5-6",      // SERVICE: every service
+	"S-1-5-7",      // ANONYMOUS LOGON
+	"S-1-5-11",     // Authenticated Users
+	"S-1-5-13",     // TERMINAL SERVER USER
+	"S-1-5-14",     // REMOTE INTERACTIVE LOGON
+	"S-1-5-15",     // This Organization
+	"S-1-5-32-545", // BUILTIN\Users
+	"S-1-5-32-546", // BUILTIN\Guests
+	"S-1-5-32-554", // BUILTIN\Pre-Windows 2000 Compatible Access
+	"S-1-15-2-1",   // ALL APPLICATION PACKAGES
+	"S-1-15-2-2",   // ALL RESTRICTED APPLICATION PACKAGES
+}
+
+// Relative IDs of the groups each domain - and each machine's own account database - puts every
+// account of a kind in: Domain Users (on a machine, "None"), Domain Guests, Domain Computers.
+const (
+	ridDomainUsers     = "513"
+	ridDomainGuests    = "514"
+	ridDomainComputers = "515"
+)
+
+// isNeverTrusted reports whether sid, in canonical form, is a group every account, every signed-in
+// one, or a whole class of them is in: one of neverTrusted, or a domain's or machine's
+// (S-1-5-21-a-b-c-rid) Domain Users, Domain Guests or Domain Computers.
+func isNeverTrusted(sid string) bool {
+	if slices.Contains(neverTrusted, sid) {
+		return true
+	}
+	parts := strings.Split(sid, "-")
+	if len(parts) != 8 || parts[0] != "S" || parts[1] != "1" || parts[2] != "5" || parts[3] != "21" {
+		return false
+	}
+	switch parts[7] {
+	case ridDomainUsers, ridDomainGuests, ridDomainComputers:
+		return true
+	}
+	return false
+}
 
 // File access rights (winnt.h).
 const (
@@ -149,8 +194,8 @@ func trustedPrincipals(trust KeyFileTrust, canonicalSID func(string) (string, bo
 		if !ok {
 			return nil, invalidTrust("KeyFileTrust.WindowsPrincipals holds '%s', which is not a security identifier (S-1-...).", value)
 		}
-		if slices.Contains(neverTrusted, sid) {
-			return nil, invalidTrust("KeyFileTrust.WindowsPrincipals holds %s, which every account (or every signed-in one) is in; "+
+		if isNeverTrusted(sid) {
+			return nil, invalidTrust("KeyFileTrust.WindowsPrincipals holds %s, which every account (or every signed-in one, or a whole class of them) is in; "+
 				"trusting it would trust anyone to replace a trusted file.", describePrincipal(sid, accountName))
 		}
 		trusted = append(trusted, sid)

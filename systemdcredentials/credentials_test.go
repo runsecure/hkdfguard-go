@@ -421,8 +421,12 @@ func TestAFileThatCantBeRead_IsRefused(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		t.Fatal(err)
+	}
 
-	if _, err := readCredentialFrom(file); err == nil {
+	if _, err := readCredentialFrom(file, info); err == nil {
 		t.Fatal("a write-only handle was read")
 	}
 }
@@ -450,4 +454,26 @@ func (r *failingReader) Read(p []byte) (int, error) {
 	}
 	r.read, r.buffer = true, p
 	return copy(p, r.data), nil
+}
+
+// A credentials directory - given, or named by $CREDENTIALS_DIRECTORY - must be absolute: a
+// relative one would be found from the working directory.
+func TestARelativeCredentialsDirectory_IsRefused(t *testing.T) {
+	if _, err := ReadLoadedCredential("tls-password", "credentials"); !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("given: got %v", err)
+	}
+	t.Setenv(CredentialsDirectoryVariable, "credentials")
+	if _, err := ReadLoadedCredential("tls-password", ""); !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("from the environment: got %v", err)
+	}
+	if _, err := NewSource(nil, nil, "credentials"); !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("NewSource: got %v", err)
+	}
+	source, err := NewSource(nil, nil, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := source.Decrypt(context.Background(), "tls-password", make([]byte, 16)); !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("Source.Decrypt from the environment: got %v", err)
+	}
 }

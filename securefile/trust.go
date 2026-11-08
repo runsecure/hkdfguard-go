@@ -7,8 +7,13 @@ import "slices"
 type KeyFileTrustOptions struct {
 	// WindowsPrincipals are Windows security identifiers (SIDs, such as a deployers group's
 	// "S-1-5-21-...-1005") that may also own, and hold write rights on, a key file and the folders
-	// above it. They are checked when a key file is read: one that is not a SID, and Everyone,
-	// Authenticated Users, Users, Interactive and Anonymous, are refused then (ErrInvalidTrust).
+	// above it. They are checked when a key file is read: one that is not a SID, and any group
+	// every account, every signed-in one or a whole class of them is in, are refused then
+	// (ErrInvalidTrust). Those are Everyone, Authenticated Users, Users, Guests, Pre-Windows 2000
+	// Compatible Access, the logon-type groups (Local, Console Logon, Interactive, Network, Batch,
+	// Service, Dialup, Remote Interactive Logon, Terminal Server User), This Organization,
+	// Anonymous, All (Restricted) Application Packages, and any domain's Domain Users, Domain
+	// Guests and Domain Computers.
 	WindowsPrincipals []string
 
 	// UnixUserIDs are Linux and macOS user ids that may also own a key file, the directories above

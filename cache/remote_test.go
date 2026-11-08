@@ -393,3 +393,80 @@ func TestRemoteCache_AFailedFetch_IsLoggedWithoutTheName_UnlessSensitiveLoggingI
 		}
 	}
 }
+
+// A store that hands values over from goroutines of its own - one finishing before Fetch returns,
+// others racing its return - has each either stored or refused: a value the sink accepted is
+// cached, and one it refused is not.
+func TestRemoteCache_TheSinkIsSafeForValuesFromOtherGoroutines(t *testing.T) {
+	ring := newRingOnly(t)
+	type outcome struct {
+		i   int
+		err error
+	}
+	stragglers := make(chan outcome, 8)
+	var lateSinks sync.WaitGroup
+	var fetched atomic.Bool
+	c, err := NewRemote(ring, storeFunc(func(_ context.Context, _ string, sink *SecretSink) error {
+		done := make(chan error)
+		go func() { done <- sink.SetKeyBytes("early", []byte("e")) }()
+		if err := <-done; err != nil {
+			return err
+		}
+		if fetched.Swap(true) {
+			return nil // a later lookup's fetch: only the first leaves goroutines behind
+		}
+		for i := range cap(stragglers) {
+			lateSinks.Add(1)
+			go func() {
+				defer lateSinks.Done()
+				time.Sleep(time.Duration(i) * time.Millisecond)
+				stragglers <- outcome{i, sink.SetKeyBytes(fmt.Sprintf("late%d", i), []byte("l"))}
+			}()
+		}
+		return nil
+	}), RemoteOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := get(t, c, "s#early"); got != "e" {
+		t.Fatalf("the value set before Fetch returned: %q", got)
+	}
+	lateSinks.Wait()
+	close(stragglers)
+	for o := range stragglers {
+		if o.err != nil && !errors.Is(o.err, ErrSinkRefused) {
+			t.Fatalf("late%d: %v", o.i, o.err)
+		}
+		want := ""
+		if o.err == nil {
+			want = "l"
+		}
+		if got, _ := get(t, c, fmt.Sprintf("s#late%d", o.i)); got != want {
+			t.Fatalf("late%d: set returned %v, and the cache holds %q", o.i, o.err, got)
+		}
+	}
+}
+
+// An invalid key comes from the secret's own content, so its error names it only with sensitive
+// logging on.
+func TestSecretSink_AnInvalidKeysError_NamesItOnlyWithSensitiveLogging(t *testing.T) {
+	original := diagnostics.Cache.SensitiveLoggingEnabled()
+	t.Cleanup(func() { diagnostics.Cache.SetSensitiveLogging(original) })
+
+	for _, sensitive := range []bool{false, true} {
+		diagnostics.Cache.SetSensitiveLogging(sensitive)
+		var keyErr error
+		c, _ := NewRemote(newRingOnly(t), storeFunc(func(_ context.Context, _ string, sink *SecretSink) error {
+			keyErr = sink.SetKeyBytes("p@ss word", []byte("x"))
+			return nil
+		}), RemoteOptions{})
+		get(t, c, "s")
+
+		if !errors.Is(keyErr, ErrInvalidKey) {
+			t.Fatalf("got %v", keyErr)
+		}
+		if named := strings.Contains(keyErr.Error(), "p@ss word"); named != sensitive {
+			t.Fatalf("sensitive logging %v: %q names the key: %v", sensitive, keyErr, named)
+		}
+	}
+}

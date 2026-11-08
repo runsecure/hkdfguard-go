@@ -148,14 +148,16 @@ func (c *Credentials) run(ctx context.Context, verb string, arguments []string, 
 // LoadCredentialEncrypted= or SetCredentialEncrypted= in its unit - from its in-memory credentials
 // directory under /run, which only the service can read: credentialsDirectory, or, when that is
 // empty, the one $CREDENTIALS_DIRECTORY names. It returns nil and no error when there is no such
-// credential, or no credentials directory; ErrInvalidName for a name that can't be one; and
+// credential, or no credentials directory; ErrInvalidName for a name that can't be one;
+// ErrInvalidArgument for a credentials directory that isn't an absolute path, or a credential
+// that isn't a regular file - a FIFO or device, whose read could block or never end; and
 // ErrTooLarge for a credential longer than MaxLength. Close the Credential once used.
 func ReadLoadedCredential(name, credentialsDirectory string) (*Credential, error) {
 	path, err := loadedCredentialPath(name, credentialsDirectory)
-	if err != nil || path == "" || !isFile(path) {
+	if err != nil || path == "" {
 		return nil, err
 	}
-	return readCredentialFile(path)
+	return readLoadedCredentialFile(path)
 }
 
 // loadedCredentialPath is where the loaded credential name would be; empty when there is no
@@ -171,13 +173,20 @@ func loadedCredentialPath(name, credentialsDirectory string) (string, error) {
 	if directory == "" {
 		return "", nil
 	}
+	if err := checkCredentialsDirectory(directory); err != nil {
+		return "", err
+	}
 	return filepath.Join(directory, name), nil
 }
 
-// isFile reports whether path is a file, not a directory, that exists.
-func isFile(path string) bool {
-	info, err := os.Stat(path)
-	return err == nil && !info.IsDir()
+// checkCredentialsDirectory refuses a credentials directory that isn't an absolute path: systemd
+// always names one under /run, and a relative one would be found from whatever the working
+// directory happens to be.
+func checkCredentialsDirectory(directory string) error {
+	if !filepath.IsAbs(directory) {
+		return fmt.Errorf("%w: the credentials directory must be an absolute path, not '%s'", ErrInvalidArgument, directory)
+	}
+	return nil
 }
 
 func checkName(name string) error {

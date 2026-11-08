@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -351,5 +353,24 @@ func TestOpenKeyFile_WipesTheBufferOnEveryRefusal(t *testing.T) {
 				t.Fatal("the buffer still holds what the library read")
 			}
 		})
+	}
+}
+
+// A relative key-file path reaches the library resolved against the working directory; an absolute
+// one reaches it as given.
+func TestOpenKeyFile_ResolvesARelativePath(t *testing.T) {
+	working, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	absolute := filepath.Join(working, "keys", "v1.key")
+	f := &fakeLibrary{openFilePayload: []byte("wrapped")}
+	for _, path := range []string{filepath.Join("keys", "v1.key"), absolute} {
+		if _, err := openKeyFile(f, path); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(f.openFilePaths) != 2 || f.openFilePaths[0] != absolute || f.openFilePaths[1] != absolute {
+		t.Fatalf("the library was given %q; want %q twice", f.openFilePaths, absolute)
 	}
 }

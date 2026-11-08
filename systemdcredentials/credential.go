@@ -1,8 +1,10 @@
 package systemdcredentials
 
 import (
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 
 	"github.com/runsecure/hkdfguard-go"
@@ -74,22 +76,56 @@ func readCredential(r io.Reader) (*Credential, error) {
 	}
 }
 
-// readCredentialFile reads the file at path whole, unbuffered - os.File reads go straight to the
-// kernel - so nothing but its page cache holds the value on the way.
-func readCredentialFile(path string) (*Credential, error) {
-	file, err := os.Open(path)
+// readLoadedCredentialFile reads the regular file at path whole, unbuffered - os.File reads go
+// straight to the kernel - so nothing but its page cache holds the value on the way. It returns
+// nil and no error when nothing, or a directory, is at path.
+//
+// The file is opened without blocking (O_NONBLOCK, on Linux), and what was opened is checked, not
+// what a separate look at path found: a FIFO or device put there - which could block the read
+// forever, or never end it - is refused with ErrInvalidArgument, however it was swapped in.
+func readLoadedCredentialFile(path string) (*Credential, error) {
+	file, err := os.OpenFile(path, os.O_RDONLY|nonBlockingOpenFlag, 0)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
 	if err != nil {
 		return nil, err
 	}
 	defer file.Close()
-	return readCredentialFrom(file)
-}
-
-func readCredentialFrom(file *os.File) (*Credential, error) {
 	info, err := file.Stat()
 	if err != nil {
 		return nil, err
 	}
+	if regular, err := checkRegular(path, info); !regular {
+		return nil, err
+	}
+	return readCredentialFrom(file, info)
+}
+
+// regularFile reports whether path is a regular file: false and no error when nothing, or a
+// directory, is there; ErrInvalidArgument for anything else that isn't a regular file.
+func regularFile(path string) (bool, error) {
+	info, err := os.Stat(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return checkRegular(path, info)
+}
+
+func checkRegular(path string, info fs.FileInfo) (bool, error) {
+	switch {
+	case info.Mode().IsRegular():
+		return true, nil
+	case info.IsDir():
+		return false, nil
+	}
+	return false, fmt.Errorf("%w: '%s' isn't a regular file (%v), so it can't be a credential", ErrInvalidArgument, path, info.Mode().Type())
+}
+
+func readCredentialFrom(file *os.File, info fs.FileInfo) (*Credential, error) {
 	if info.Size() > MaxLength {
 		return nil, tooLarge()
 	}
