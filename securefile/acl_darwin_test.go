@@ -102,14 +102,29 @@ func TestDarwinAccessACLWriters_NoACLIsNoWriters(t *testing.T) {
 	}
 }
 
-func TestDarwinAccessACLWriters_ReportsTheEveryoneGroup(t *testing.T) {
+// staffGID is macOS's "staff" group, which every Mac has.
+const staffGID = 20
+
+func TestDarwinAccessACLWriters_ReportsAGroupThatMayWrite(t *testing.T) {
 	_, path, _ := aclKeyFile(t)
-	chmodACL(t, path, "+a", "everyone allow append")
+	chmodACL(t, path, "+a", "group:staff allow append")
 	writers, err := accessACLWriters(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := []aclWriter{{group: true, id: 12}}; fmt.Sprint(writers) != fmt.Sprint(want) {
+	if want := []aclWriter{{group: true, id: staffGID}}; fmt.Sprint(writers) != fmt.Sprint(want) {
 		t.Fatalf("writers = %v, want %v", writers, want)
+	}
+}
+
+// An everyone entry is refused outright rather than reported as a writer, as an other-writable
+// mode is: everyone is every account, whatever the trust names.
+func TestDarwinAccessACLWriters_RefusesTheEveryoneGroup(t *testing.T) {
+	_, path, _ := aclKeyFile(t)
+	chmodACL(t, path, "+a", "everyone allow append")
+	writers, err := accessACLWriters(path)
+	requireKeyFileError(t, err, ErrUntrusted, "access ACL", "lets everyone write", path)
+	if writers != nil {
+		t.Fatalf("writers = %v, want none alongside the refusal", writers)
 	}
 }
