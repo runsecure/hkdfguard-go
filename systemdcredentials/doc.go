@@ -8,7 +8,9 @@
 // reads the value from its standard output straight into a Credential, in a buffer that grows as it
 // is read and wipes each smaller one it drops, up to systemd's 1 MiB limit (MaxLength). A run that
 // outlasts Options.Timeout, or whose context is cancelled, is killed with its whole process group.
-// The plaintext never touches a file or a command line.
+// The plaintext never touches a file or a command line. systemd-creds inherits none of this
+// process's environment - only a PATH of the system directories - so no variable set for the
+// application, such as SYSTEMD_CREDENTIAL_SECRET, can redirect it, and no secret in one reaches it.
 //
 //	// At deploy, on the machine itself (as root, for system credentials):
 //	credentials, err := systemdcredentials.New(systemdcredentials.Options{})

@@ -22,20 +22,35 @@ type runner interface {
 	run(ctx context.Context, executablePath string, arguments []string, stdin []byte, timeout time.Duration) (runResult, error)
 }
 
-// maxStderr is how much of systemd-creds' standard error is kept for a CommandError.
-const maxStderr = 64 * 1024
+// maxStderr is how much of systemd-creds' standard error is kept for a CommandError: enough for
+// its message, never so much that an error - and every log it reaches - carries a flood.
+const maxStderr = 1024
+
+// truncatedStderr marks standard error cut off at maxStderr.
+const truncatedStderr = " [truncated]"
+
+// childPath is the only PATH systemd-creds is given: the system's own directories.
+const childPath = "PATH=/usr/sbin:/usr/bin:/sbin:/bin"
 
 // processRunner runs the real systemd-creds: arguments as an argument list, never through a shell;
 // stdin written straight to the pipe, with no buffer of its own that couldn't be wiped; stdout read
 // straight off the pipe into a Credential. If it outlasts the timeout or ctx is cancelled it is
 // killed - on Linux with every process it started, as its own process group (process_linux.go).
-type processRunner struct{}
+//
+// It is given a fixed environment - childPath, and nothing of this process's - so no variable set
+// for the application can steer it: SYSTEMD_CREDENTIAL_SECRET pointing it at another host key,
+// SYSTEMD_LOG_LEVEL making it write more than its message, LD_PRELOAD, or a secret it has no use
+// for. extraEnv adds to that; only the tests set it.
+type processRunner struct {
+	extraEnv []string
+}
 
-func (processRunner) run(ctx context.Context, executablePath string, arguments []string, stdin []byte, timeout time.Duration) (runResult, error) {
+func (r processRunner) run(ctx context.Context, executablePath string, arguments []string, stdin []byte, timeout time.Duration) (runResult, error) {
 	runCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
 	cmd := exec.CommandContext(runCtx, executablePath, arguments...)
+	cmd.Env = append([]string{childPath}, r.extraEnv...)
 	killProcessGroupOnCancel(cmd)
 	// Once killed, Wait gives up on pipes a stray descendant still holds open after this long.
 	cmd.WaitDelay = time.Second
@@ -95,15 +110,28 @@ func (processRunner) run(ctx context.Context, executablePath string, arguments [
 	return runResult{}, fmt.Errorf("running %s: %w", executablePath, waitErr)
 }
 
-// limitedBuffer keeps the first limit bytes written to it, and discards the rest.
+// limitedBuffer keeps the first limit bytes written to it, and discards the rest - saying so when
+// it is read. Its buffer is a field, not embedded: an embedded bytes.Buffer's ReadFrom would be
+// promoted, and io.Copy - which exec uses to fill it - would call that, keeping everything.
 type limitedBuffer struct {
-	bytes.Buffer
-	limit int
+	kept      bytes.Buffer
+	limit     int
+	truncated bool
 }
 
 func (b *limitedBuffer) Write(p []byte) (int, error) {
-	if room := b.limit - b.Len(); room > 0 {
-		b.Buffer.Write(p[:min(len(p), room)])
+	room := max(b.limit-b.kept.Len(), 0)
+	b.kept.Write(p[:min(len(p), room)])
+	if len(p) > room {
+		b.truncated = true
 	}
 	return len(p), nil
+}
+
+// String is what was kept, followed by truncatedStderr when anything was discarded.
+func (b *limitedBuffer) String() string {
+	if b.truncated {
+		return b.kept.String() + truncatedStderr
+	}
+	return b.kept.String()
 }

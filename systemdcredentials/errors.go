@@ -42,7 +42,8 @@ type CommandError struct {
 	// ExitCode is systemd-creds' exit code.
 	ExitCode int
 
-	// Stderr is what systemd-creds wrote to its standard error.
+	// Stderr is what systemd-creds wrote to its standard error: its first 1 KiB, followed by
+	// " [truncated]" when there was more.
 	Stderr string
 }
 
