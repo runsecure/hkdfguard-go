@@ -12,6 +12,14 @@ import (
 // each source in the order it was added and return the first match. It never stores a value of its
 // own - Add registers a source - so writing stays with whichever sources support it (a Cache can
 // be one of them). Safe for concurrent use.
+//
+// A source that fails fails the lookup, even when a later source holds the name: a source that
+// couldn't answer can't say whether it holds the name, and answering from a later source could
+// return a value an earlier one overrides. Order sources so that cannot cost availability: add
+// local sources (a Cache, or a cache/filepersecret cache) before remote ones (a RemoteCache such as
+// the Key Vault or Secrets Manager caches). A RemoteCache doesn't remember a name its store lacks,
+// so a remote source added first makes a network call for every local-only name on every lookup -
+// enough to be throttled, and then to fail every lookup.
 type Collection struct {
 	mu      sync.RWMutex
 	sources []hkdfguard.ProtectedReadOnlyCache
@@ -49,7 +57,8 @@ func (c *Collection) Decrypt(ctx context.Context, name string, result []byte) (i
 	for _, source := range c.snapshot() {
 		n, err := source.Decrypt(ctx, name, result)
 		if err != nil {
-			diagnostics.RecordError(span, err)
+			// The source's error may quote the name, and only its source can say how it derived others.
+			diagnostics.RecordError(span, telemetry.LoggedError(err, name))
 			return 0, err
 		}
 		if n > 0 {

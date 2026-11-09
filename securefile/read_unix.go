@@ -9,16 +9,17 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// readOnPlatform wires the unixrules.go rules to real files; exercised by the Unix-only real-file
-// tests.
-func readOnPlatform(path string, trust KeyFileTrust) ([]byte, error) {
+// openOnPlatform wires the unixrules.go rules to real files, then hands consume a read function
+// over the open file and the path to name in its messages; exercised by the Unix-only real-file
+// tests. noun is what the messages call the file ("key file").
+func openOnPlatform(path string, trust KeyFileTrust, noun string, consume func(read readFunc, name string) error) error {
 	absolute := path
 	if !strings.HasPrefix(path, "/") {
 		// getcwd(2): already a resolved path (os.Getwd may return $PWD, which can hold links).
 		// resolveTrusted handles ".." itself.
 		workingDirectory, err := unix.Getwd()
 		if err != nil {
-			return nil, keyFileError(err, path, "Could not find the working directory to resolve key file '%s' (%s).", path, errnoName(err))
+			return keyFileError(err, path, "Could not find the working directory to resolve %s '%s' (%s).", noun, path, errnoName(err))
 		}
 		if strings.HasSuffix(workingDirectory, "/") {
 			absolute = workingDirectory + path
@@ -28,7 +29,7 @@ func readOnPlatform(path string, trust KeyFileTrust) ([]byte, error) {
 	}
 	resolved, err := resolveTrusted(absolute, trust, lstatStatus, readLink)
 	if err != nil {
-		return nil, err
+		return err
 	}
 
 	// resolved holds no symbolic link, so O_NOFOLLOW changes nothing for a file that passed; it
@@ -36,9 +37,9 @@ func readOnPlatform(path string, trust KeyFileTrust) ([]byte, error) {
 	descriptor, err := openNoFollow(resolved)
 	if err != nil {
 		if errors.Is(err, unix.ELOOP) {
-			return nil, untrustedUnix(path, "'%s' became a symbolic link after it was checked", resolved)
+			return untrustedUnix(path, "'%s' became a symbolic link after it was checked", resolved)
 		}
-		return nil, keyFileError(err, path, "Could not open key file '%s' (%s).", path, errnoName(err))
+		return keyFileError(err, path, "Could not open %s '%s' (%s).", noun, path, errnoName(err))
 	}
 	defer unix.Close(descriptor)
 
@@ -46,20 +47,20 @@ func readOnPlatform(path string, trust KeyFileTrust) ([]byte, error) {
 	// untrusted account can't do here anyway.
 	var status unix.Stat_t
 	if err := unix.Fstat(descriptor, &status); err != nil {
-		return nil, keyFileError(err, path, "Could not examine key file '%s' (%s).", path, errnoName(err))
+		return keyFileError(err, path, "Could not examine %s '%s' (%s).", noun, path, errnoName(err))
 	}
 	if uint32(status.Mode)&unix.S_IFMT != unix.S_IFREG {
-		return nil, untrustedUnix(path, "'%s' is no longer a regular file", resolved)
+		return untrustedUnix(path, "'%s' is no longer a regular file", resolved)
 	}
 
-	return readContents(func(buffer []byte) (int, error) {
+	return consume(func(buffer []byte) (int, error) {
 		for {
 			count, err := unix.Read(descriptor, buffer)
 			if errors.Is(err, unix.EINTR) {
 				continue
 			}
 			if err != nil {
-				return 0, keyFileError(err, path, "Could not read key file '%s' (%s).", path, errnoName(err))
+				return 0, keyFileError(err, path, "Could not read %s '%s' (%s).", noun, path, errnoName(err))
 			}
 			return count, nil
 		}
@@ -101,8 +102,9 @@ func lstatStatus(path string) (unixFileStatus, bool, error) {
 		fileType = unixSymbolicLink
 	}
 	result := unixFileStatus{ownerID: status.Uid, groupID: status.Gid, mode: mode & 0o7777, fileType: fileType}
-	// Only a group-writable mode can hide an ACL write grant: the bit is then the ACL's mask.
-	if fileType != unixSymbolicLink && result.mode&groupWrite != 0 {
+	// On Linux only a group-writable mode can hide an ACL write grant: the bit is then the ACL's
+	// mask. A macOS extended ACL is independent of the mode, so it is read whatever the mode.
+	if fileType != unixSymbolicLink && (aclReadWhateverTheMode || result.mode&groupWrite != 0) {
 		writers, err := accessACLWriters(path)
 		if err != nil {
 			return unixFileStatus{}, false, err

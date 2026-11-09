@@ -20,7 +20,8 @@ the [`hkdfguard` tool reference](docs/reference/cli.md), and how to
 
 Go port of `HkdfGuard.Abstractions`: the interfaces every implementation satisfies
 (`KeyWrapper`, `CryptoProviderFactory`/`CryptoProvider`, `DataEncryptionKey`, `KeyRing`,
-`EncryptedFormatProvider`, `DataProtector`, `PipelineDataProtector`, `ProtectedCache`), the shared
+`EncryptedFormatProvider`, `DataProtector`, `PipelineDataProtector`, `SecretPipelineWriter`,
+`ProtectedCache`), the shared
 cross-port rules (`ConfigurationPurpose`/`ConfigurationAAD`, `ValidateServiceName`), limits and
 defaults, and the `Wipe`/`IsZero` secret-memory helpers. Implementation packages import this one
 and never each other, so each can be swapped independently.
@@ -96,7 +97,10 @@ to their names (`hkdfguard.CacheAAD`), matched ignoring ASCII case only.
   `cache.CaptureJSONKeys` take a secret out of a JSON response body before an SDK can turn it into
   a string, so a fetched secret is never a Go string. The stores HkdfGuard ships are the
   `cache/*` modules below.
-- `cache.NewCollection(a, b, ...)` - several caches behind one lookup, first match wins.
+- `cache.NewCollection(a, b, ...)` - several caches behind one lookup, first match wins. A source
+  that fails fails the lookup, even when a later source holds the name, so add local sources (a
+  `cache.Cache`, a `cache/filepersecret` or `cache/jsonsecretsfile` cache) before remote ones: a remote cache doesn't remember a
+  name its store lacks, so one added first makes a network call for every local-only name.
 
 ### `encryptedconfig`
 
@@ -393,12 +397,263 @@ reach is below the SDK - TLS and socket buffers - plus, for Vault, the token the
 [Cache HashiCorp Vault secrets](docs/how-to/use-hashicorp-vault-secret-cache.md); each covers its
 real-store integration tests, which skip unless a secret is named.
 
+### `cache/filepersecret` (separate module): reading secrets from a folder, one file per secret
+
+Go port of the .NET `FilePerSecretCache`: `filepersecret.New` returns a `*filepersecret.Cache`, a
+`hkdfguard.ProtectedReadOnlyCache` over a local folder holding one file per secret - the file named
+`Db-Password` holds that secret's value, already encrypted and formatted (`enc::v3::...`). Nothing
+is read up front: the first lookup of a name reads that one file, checks its value authenticates,
+and caches it in memory still encrypted, exactly as the file holds it. Every later lookup is served
+from memory:
+
+```go
+deployers := securefile.NewKeyFileTrust(securefile.KeyFileTrustOptions{
+	WindowsPrincipals: []string{"S-1-5-21-...-1005"}, // the account that deploys secrets
+})
+secrets, err := filepersecret.New(`C:\HkdfGuardSecrets\myapp`, deployers, ring, dek.NewDefaultFormatProvider(), filepersecret.Options{})
+if err != nil { ... }
+
+buffer := make([]byte, 256)
+n, err := secrets.Decrypt(ctx, "Db-Password", buffer) // 0 if there's no such file
+```
+
+Each file must be encrypted for its own name, with the purpose `hkdfguard.ConfigurationPurpose(name)`.
+That is what a `hkdfguard.PipelineDataProtector` writes for the secret identifier `name`, and what
+`ring.CreateProtector(hkdfguard.ConfigurationPurpose(name))` writes. A file copied under another
+name fails with `hkdfguard.ErrAuthenticationFailed` when it is loaded, and isn't cached, so a
+corrected file is read on the next lookup.
+
+Every file is read through `securefile.ReadTrustedFile`, so it is refused - with a
+`*securefile.KeyFileError` matching `securefile.ErrUntrusted` and `fs.ErrPermission` - unless it and
+every folder above it are owned and modifiable only by the operating system's administrators and the
+principals the `securefile.KeyFileTrust` adds. Add the account that deploys secrets, never the one
+the application runs as: one that can rewrite its own secrets can be made to roll one back.
+
+A name is a file name: 1-255 ASCII letters, digits, `-`, `_` and `.`, not starting with `.`
+(`filepersecret.IsValidName`), so it can't reach outside the folder. Any other name (for example
+`ConnectionStrings:Admin`), a missing or empty file and a missing folder all return 0, so the cache
+can sit in a `cache.Collection` beside other sources; a missing secret isn't remembered, so a file
+added later is found. A file over 64 KiB (`filepersecret.MaxFileLength`) fails with
+`securefile.ErrTooLarge`, a value under a key version the ring doesn't hold with
+`hkdfguard.ErrKeyNotFound`, one not in the format with `dek.ErrInvalidFormat`; any other read
+failure is returned as `securefile` reports it. A cached value isn't refreshed: a changed file is
+picked up by a new cache. It is its own module because it reads through `securefile`, which depends
+on the root module the `cache` package is in.
+
+### `cache/jsonsecretsfile` (separate module): reading secrets from one JSON file
+
+Go port of the .NET `JsonSecretsFileReadOnlyCache`: `jsonsecretsfile.New` returns a
+`*jsonsecretsfile.Cache`, a `hkdfguard.ProtectedReadOnlyCache` over one JSON file holding every
+secret, as a pipeline writer's `WriteJSONSecrets` (or `WriteJSONSecretsTo`) writes it - a single
+object mapping each secret's name to its already-encrypted value. The whole file is read through
+`securefile.ReadTrustedFile` on the first lookup, every value authenticated under its name, and the
+values kept in memory still encrypted; every later lookup is served from memory:
+
+```go
+secrets, err := jsonsecretsfile.New("/etc/myapp/secrets.json", deployers, ring, dek.NewDefaultFormatProvider(), jsonsecretsfile.Options{})
+if err != nil { ... }
+
+n, err := secrets.Decrypt(ctx, "Db-Password", buffer) // 0 if the file holds no such secret
+```
+
+The file is delivered as one, so it is loaded as one: a value that fails authentication
+(`hkdfguard.ErrAuthenticationFailed`), names a key version the ring doesn't hold
+(`hkdfguard.ErrKeyNotFound`) or isn't in the format fails the whole load, and nothing is kept, so
+the file is read again on the next lookup. So is a file that isn't exactly the secrets object -
+not valid JSON, not one object, a name `filepersecret.IsValidName` refuses or one given twice
+ignoring case, a value that isn't a non-empty string - which fails with
+`jsonsecretsfile.ErrInvalidData`. Names are looked up ignoring ASCII case, whatever the
+filesystem; any name that couldn't be one returns 0, as does every name while the file (or a
+folder above it) is missing, which isn't remembered. A file over `Options.MaxFileLength` (default
+1 MiB, `jsonsecretsfile.DefaultMaxFileLength`) fails with `securefile.ErrTooLarge`, and an
+untrusted location as for `cache/filepersecret`. One load runs at a time; a lookup waiting for it
+stops when its context ends. The loaded values are kept for the life of the cache. Depends on the
+root module, `securefile` and `cache/filepersecret` (for its name rule).
+
+### Pipeline writers: `pipeline`, `pipeline/awssecretsmanager`, `pipeline/azurekeyvault`, `pipeline/googlesecretmanager`, `pipeline/hashicorpvault` (separate modules)
+
+Go ports of `HkdfGuard.Pipeline` and its four store writers: the end of a provisioning pipeline,
+before a durable KEK exists. A writer pulls a fixed list of secrets from a secret store, encrypts
+each at once with a `hkdfguard.PipelineDataProtector` (`aesgcm256.NewPipelineDataProtector`) bound
+to its file name, keeps only the ciphertext, and writes one file per secret - the folder layout
+`cache/filepersecret` reads at runtime - or one JSON file of them all (`WriteJSONSecrets`), the file
+`cache/jsonsecretsfile` reads. Each can also be written to an `io.Writer`, for a remote command's
+stdin: `WriteProtectedSecretFilesTo` as a PAX tar archive of the files (for
+`ssh -T host sudo -n tar -x --no-same-owner -f - -C folder`), `WriteJSONSecretsTo` as the JSON (for
+`ssh -T host sudo -n tee /etc/app/secrets.json`). No key ring is involved: once the files are
+written, the protector's key goes to the native platform's wrap process - `WriteDEK` writes it to the
+wrap tool's stdin (`--dek-stdin`) from a buffer zeroed afterwards, or `KeyBase64` hands it over.
+Give `WriteDEK` the pipe itself, not a `*bufio.Writer` or other buffering writer, whose copy of the
+key nothing wipes.
+
+```go
+protector, err := aesgcm256.NewPipelineDataProtector(dek.NewDefaultFormatProvider(), 3)
+if err != nil { ... }
+defer protector.Close()
+writer, err := awssecretsmanager.New(secretsmanager.NewFromConfig(cfg), protector,
+	[]string{"prod/app#username", "prod/app#password", "prod/api-key"})
+if err != nil { ... }
+defer writer.Close()
+if err := writer.PullSecrets(ctx); err != nil { ... }
+if err := writer.WriteProtectedSecretFiles(`C:\HkdfGuardSecrets\myapp`); err != nil { ... }
+// Then hand the key to the wrap tool - protector.WriteDEK(ctx, stdin) - and register it at version 3.
+```
+
+Or straight onto another host, over ssh, with nothing written locally:
+
+```go
+unpack := exec.CommandContext(ctx, "ssh", "-T", "app-host", "sudo", "-n", "tar", "-x", "--no-same-owner", "-f", "-", "-C", "/etc/myapp/secrets")
+stdin, err := unpack.StdinPipe()
+if err != nil { ... }
+if err := unpack.Start(); err != nil { ... }
+writeErr := writer.WriteProtectedSecretFilesTo(ctx, stdin)
+closeErr := stdin.Close() // tar sees the end of its input
+if err := errors.Join(writeErr, closeErr, unpack.Wait()); err != nil { ... }
+```
+
+| Module | Purpose |
+|---|---|
+| `pipeline` | `pipeline.New` returns a `*pipeline.Writer` (a `hkdfguard.SecretPipelineWriter`) over a `pipeline.SecretStore`: it takes secret names - `name` or `name#key` - reads each secret once however many of its keys are listed, encrypts every value bound to its file name (`/` and `#` become `__`, and the name must be one `filepersecret.IsValidName` accepts; two differing only in case are refused), reports every missing value in one `*pipeline.MissingSecretsError` (`pipeline.ErrSecretNotFound`) after keeping the rest, keeps nothing when a read fails otherwise, and writes UTF-8 files without a BOM, replacing only its own - or one JSON object of them all (`WriteJSONSecrets`: a member per file name, in ordinal order, laid out byte for byte as .NET's indented `Utf8JsonWriter` with relaxed escaping writes it, `\r\n` line endings on Windows and `\n` elsewhere, as .NET's `Environment.NewLine`), replacing the file. `WriteProtectedSecretFilesTo` and `WriteJSONSecretsTo` write a PAX tar of the files (one regular file per secret, ordinal order, mode 0644, modified now - GNU tar and bsdtar both read it) or the JSON to an `io.Writer`, flushed when it has `Flush() error` and left open; every write checks the context. A key's value is a string's text, or a number's, `true`'s or `false`'s JSON text; a JSON object holding a key twice, or a value that isn't UTF-8 text, is refused (`pipeline.ErrInvalidSecretData`). A store supplies only `IsValidName` and `ReadSecret`; `pipeline.ReadBody` reads a response body into a buffer zeroed by the caller. Depends on the root module and `cache/filepersecret` (for its file-name rule). |
+| `pipeline/hashicorpvault` | `New(client, protector, names, options)` over one KV engine, version 1 or 2, through the application's `*api.Client`: `path` or `path#key`, a name without a key reading `Options.DefaultKey` (`"value"`); raw reads parsed straight into zeroed buffers; https only (http and `unix://` on the local host), and the client must set `DisableRedirects` unless `Options.AllowRedirects`. Failures are `*hashicorpvault.Error` (`ErrVault`). |
+| `pipeline/awssecretsmanager` | `New(client, protector, names)` through the application's `*secretsmanager.Client`: `name` for the whole `SecretString`, `name#key` for a member of a key/value secret; a per-call middleware below the deserializer takes the body and hands the SDK `{}`, with response-body logging forced off; a `SecretBinary` is refused. |
+| `pipeline/azurekeyvault` | `New(vaultURL, credential, protector, names, options)` - its own `azsecrets.Client` from a copy of `Options.ClientOptions`: `name` or `name#key`; a per-retry policy reads the unbuffered body and hands the SDK `{}`; options that log bodies are refused. |
+| `pipeline/googlesecretmanager` | `New(client, projectID, protector, names)` through the application's `*secretmanager.Client`: each secret's latest version, its CRC32C and name checked (`ErrInvalidResponse`), the payload encrypted straight from the decoded `[]byte` and zeroed, as are gRPC's receive buffers. |
+
+The store writers never depend on the runtime caches (`cache/...`), and each is its own module so
+that only pipelines that use it depend on that SDK. Missing secrets - not found, an absent key, an
+empty or non-scalar value - are reported, never written; the protector is the caller's and is never
+closed by a writer.
+
+### `integration/configurationresolver` (separate module): templates resolved from the caches
+
+Go port of the .NET `HkdfGuard.Integration.ConfigurationResolver`, together with the parts of
+[ConfigurationResolver](https://github.com/runsecure/configurationresolver-dotnet) it uses - the
+token, the reader, the resolver and the value-provider contract - in one package, depending only
+on the root module. It fills the `${name}` items in a template, such as a connection string, with
+secrets from any `ProtectedReadOnlyCache`:
+
+```go
+token := configurationresolver.NewDefaultToken() // "${", "}", and "$" escapes: "$${x}" is "${x}"
+reader, _ := configurationresolver.NewConfigurationItemReader(token)
+reader.ReadKeysString(template) // only the keys of this trusted template may be resolved
+
+resolver, err := configurationresolver.NewConfigurationResolverBuilder().
+	WithToken(token).
+	WithReader(reader).
+	AddProtectedCache(secrets). // a cache.Cache, a cache.Collection, a remote cache, ...
+	Build()
+n, err := resolver.Resolve(ctx, []byte(template), destination) // destination wiped on failure
+```
+
+Each value is decrypted straight into the destination, or through a scratch buffer that is wiped,
+and never becomes a Go string. `configurationresolver.NewResolvingProtectedCacheCollection` is a
+`ProtectedReadOnlyCache` over several sources that resolves a value holding items on its first
+lookup, from those same sources, and keeps the result encrypted under the key ring until
+`Invalidate` or `Clear`. See
+[Resolve configuration templates from protected caches](docs/how-to/resolve-configuration-templates.md).
+
+### `options/certificate` (separate module): a certificate and its key from configuration
+
+Go port of `HkdfGuard.Options.Certificate`: `certificate.Options` is a plain-data description of
+where one certificate and its private key are opened from - exactly one of a Windows certificate
+store or a macOS keychain (a `StoreLocation`, a `StoreName` and the certificate's subject
+distinguished name), an OpenSSL 3 provider on Linux (kept for configuration parity; see below), or
+a PKCS#12 or PEM file. Its JSON names are the .NET configuration keys, so the same configuration
+binds. A file's key must be password-protected, and the password is never in the options:
+`PasswordSecretName` names the secret it is read from, unless `AllowUnprotectedPrivateKey` is set
+for development. `certificate.Validator` refuses a native source on another operating system, a
+subject that isn't a distinguished name, a relative path and an unprotected key file, listing every
+failure in one `*certificate.ValidationError` (`certificate.ErrInvalidOptions`).
+
+```go
+loader := certificate.NewLoader(secrets, certificate.LoaderOptions{}) // secrets: any hkdfguard.ProtectedReadOnlyCache
+cert, err := loader.LoadContext(ctx, &certificate.Options{
+	Windows: &certificate.StoreOptions{StoreLocation: certificate.LocalMachine, Subject: "CN=api.example.com"},
+}, "tls")
+if err != nil { ... }
+defer cert.Close()
+tlsConfig := &tls.Config{Certificates: []tls.Certificate{cert.TLSCertificate()}}
+```
+
+`Loader.Load`/`LoadContext` validate the options and open a `*certificate.Certificate`: `Leaf()`,
+the DER chain its source gave, and a `crypto.Signer` (a `crypto.Decrypter` too, for RSA) that
+fails with `certificate.ErrClosed` once the certificate is closed; `TLSCertificate()` is all three
+as `crypto/tls` takes them. From a store, the certificate with that subject - compared whole and
+decoded, ignoring case, never as a substring - that is valid now (with its private key, when
+required) and expires last; every other is released. A certificate that isn't valid now, or lacks a
+required key, is refused (`ErrNotValidNow`, `ErrNoPrivateKey`, `ErrNotFound` for a store). The
+clock is `LoaderOptions.Now`.
+
+- **Windows store:** `CertOpenStore` (system store, read-only, existing only) and
+  `CryptAcquireCertificatePrivateKey` with CNG alone, through `golang.org/x/sys/windows`, with no
+  cgo. The key is never exported: every signature is an `NCryptSignHash` call (RSA PKCS #1 v1.5 and
+  PSS, ECDSA, its IEEE P1363 signature converted to ASN.1) and every decryption an `NCryptDecrypt`
+  call (PKCS #1 v1.5, OAEP), through a lazily loaded `ncrypt.dll`; `Close` frees the key and
+  certificate handles. A key only a legacy CryptoAPI provider holds is refused.
+- **macOS keychain:** the Security framework through cgo, as `keywrapping/nativev1` reaches native
+  code on darwin: `SecItemCopyMatching` for `kSecClassIdentity` (and certificates without keys),
+  restricted to one keychain - CurrentUser the login keychain, LocalMachine the System keychain -
+  and `SecKeyCreateSignature` behind the `crypto.Signer` (RSA PKCS #1 v1.5 and PSS with a salt the
+  hash's length, ECDSA). Only `StoreName` My is a keychain. Without cgo the macOS store is refused
+  (`ErrUnsupported`).
+- **Linux OpenSSL provider:** Go has no OpenSSL binding, so a provider key can't be opened: the
+  validator refuses `Linux` with a required key, saying so, and with `RequirePrivateKey` false only
+  the certificate file is read. Use a `File` source, or a store on Windows or macOS, for a key.
+- **Files:** a PKCS#12 file or a PEM certificate with an encrypted PKCS#8 key. The password is
+  decrypted from the `hkdfguard.ProtectedReadOnlyCache` into a `[]byte` wiped as soon as the key is
+  read. The PKCS#12 and PBES2 decryption is the module's own, on the standard library - the
+  libraries take the password as a string, which can't be wiped: PBES2 (PBKDF2 with HMAC-SHA-1/2,
+  AES-CBC or 3DES-CBC), PKCS#12's own 3DES, HMAC-SHA-1/2 integrity MACs, and BER as well as DER -
+  what OpenSSL 3, .NET and Windows write. Legacy RC2/RC4 files (`openssl -legacy`), public-key
+  PKCS#12 contents and the PBMAC1 MAC are refused with `ErrUnsupported`. A file key is wiped on
+  `Close` as far as Go lets it be reached: `crypto/rsa` and `crypto/ecdsa` keep precomputed copies
+  of their own until the garbage collector frees them.
+
+The real-store tests run on Windows against CurrentUser\My - read-only always, and, with
+`HKDFGUARD_TEST_WINDOWS_CERT_STORE=1`, round trips through throwaway certificates
+`New-SelfSignedCertificate` makes (with non-exportable CNG keys) and removes. On macOS,
+`HKDFGUARD_TEST_MACOS_KEYCHAIN=1` imports and deletes throwaway identities in the login keychain.
+Depends on the root module and `golang.org/x/sys`.
+
+### `systemdcredentials` (separate module): Linux credentials through systemd
+
+Go port of `HkdfGuard.SystemdCredentials`. Linux only: `systemdcredentials.New` refuses anywhere
+else (`ErrUnsupportedPlatform`). `Credentials` runs `systemd-creds` by absolute path, with its
+arguments as an argument list, never through a shell: `Encrypt` writes the plaintext to its stdin
+and has it write the encrypted credential file, bound to its name and to the host key, the TPM or
+both (`systemdcredentials.Key`); `Decrypt` reads the value from its stdout into a `*Credential` -
+a buffer that grows as it is read, wiping each smaller one it drops, up to systemd's 1 MiB limit,
+and wiped on `Close`. A run that outlasts `Options.Timeout` (30 seconds by default), or whose
+context is cancelled, is killed with its whole process group. `ReadLoadedCredential` reads a
+credential systemd decrypted for the service (`LoadCredentialEncrypted=`) from its in-memory
+credentials directory under /run. `systemdcredentials.Source` is a
+`hkdfguard.ProtectedReadOnlyCache` over both - loaded credentials first, then encrypted files - for
+`options/certificate`'s password, say:
+
+```go
+credentials, err := systemdcredentials.New(systemdcredentials.Options{})
+passwords, err := systemdcredentials.NewSource(credentials,
+	map[string]string{"tls-password": "/etc/credstore.encrypted/tls-password.cred"}, "")
+loader := certificate.NewLoader(passwords, certificate.LoaderOptions{})
+```
+
+A name is 1-255 ASCII letters, digits, `.`, `_` and `-`, not `.` or `..` and not starting with `-`
+(`systemdcredentials.IsValidName`). Decrypting a system credential directly needs root (the host
+key) or TPM access; an unprivileged service uses `LoadCredentialEncrypted=` or `--user` credentials
+(`Options.UserScope`, systemd 256+). The unit tests run a fake `systemd-creds`, and the process
+runner against the test binary itself, on any OS; the real `systemd-creds` round trip runs on Linux
+when `HKDFGUARD_TEST_SYSTEMD_CREDS` is 1. Depends on the root module only.
+
 ### `securefile` (separate module)
 
 Go port of `HkdfGuard.SecureFile`: `securefile.ReadTrustedKeyFile` reads a wrapped-key file only
 from where no untrusted account could have written or replaced it - the native library's
 `hkdfguard_open_file` checks, made in Go - for a key wrapper with no native library to read
 through, such as `keywrapping/awskms`, `keywrapping/azurekeyvault` and `keywrapping/googlekms`.
+`securefile.ReadTrustedFile` (and `securefile.ParseTrustedFile`, which hands the contents to a
+parser and zeroes them once it returns, for contents that are themselves secret) applies the same
+location checks to any other file - secret files, certificates - with only a caller-chosen size
+limit, read at most one byte past whatever the file reports: the port of the .NET `TrustedFile`.
 
 - **Windows:** the file must be on a local fixed drive, reached through real folders (no symbolic
   link, junction, mount point or substituted drive; 8.3 short names are expanded first), and it
@@ -408,15 +663,19 @@ through, such as `keywrapping/awskms`, `keywrapping/azurekeyvault` and `keywrapp
 - **Linux and Apple silicon macOS:** it and every directory above it must be owned by root or a
   trusted user and writable by nobody else (by its group only if that group is trusted); only
   symbolic links a trusted user owns are followed, and the resolved path is opened with
-  `O_NOFOLLOW` and must still be a regular file.
-- **Everywhere:** 1 to `hkdfguard.MaxWrappedKeyBytes` bytes, and not what looks like an unwrapped
-  key (32 raw bytes, optionally followed by one line ending (LF or CRLF), or its hex or base64).
+  `O_NOFOLLOW` and must still be a regular file. ACL write grants count too: on Linux every named
+  user and group a group-writable item's POSIX access ACL lets write must be trusted; on macOS
+  every user and group an allow entry of any item's extended ACL (`chmod +a`) lets write, delete,
+  rewrite the ACL or take ownership must be, so `everyone allow write` is refused.
+- **Everywhere, for a key file:** 1 to `hkdfguard.MaxWrappedKeyBytes` bytes, and not what looks
+  like an unwrapped key (32 raw bytes, optionally followed by one line ending (LF or CRLF), or its
+  hex or base64). A trusted file is held only to its caller's limit, and may be empty.
 
 `securefile.KeyFileTrust` names who besides administrators is trusted (Windows SIDs, Unix uids and
 gids); its zero value, `securefile.AdministratorsOnly()`, trusts no one else. A refusal is a
 `*securefile.KeyFileError`, matchable with `errors.Is` against `fs.ErrNotExist`, `fs.ErrPermission`
-(`securefile.ErrUntrusted` for a location that isn't trusted), `hkdfguard.ErrInvalidKeyFile` or
-`securefile.ErrBusy`. It is its own module, like `keywrapping/nativev1`, because it depends on
+(`securefile.ErrUntrusted` for a location that isn't trusted), `hkdfguard.ErrInvalidKeyFile` (a key
+file's contents), `securefile.ErrTooLarge` (a trusted file over its limit) or `securefile.ErrBusy`. It is its own module, like `keywrapping/nativev1`, because it depends on
 `golang.org/x/sys` and holds platform-specific code; it does not load the native library.
 
 ### `integration` (test-only module)
@@ -426,12 +685,14 @@ native KEK wrapping its key, an application reading it back - the port of the .N
 `NativeEndToEndTests`, and the same paths through `keywrapping/awskms`, `keywrapping/azurekeyvault`
 and `keywrapping/googlekms` against in-process stand-ins for AWS KMS, Key Vault and Cloud KMS. It is
 a module of its own so the published modules never depend on each other; it is never tagged.
+`integration/configurationresolver`, inside its folder, is a separate, published module.
 
 ## Testing
 
 Every package has tests beside it. `scripts/check.sh` runs what CI runs - formatting, tidy module
 files, vet, build, every module's tests under the race detector, govulncheck, and a type-check of
-`keywrapping/nativev1` and `securefile` for every platform - from any host:
+`keywrapping/nativev1`, `securefile`, `options/certificate` and `systemdcredentials` for every
+platform - from any host:
 
 ```sh
 scripts/check.sh                       # every module
@@ -460,7 +721,7 @@ by themselves (through the library's `hkdfguard_kek_exists` export, and the prov
 tests. On Windows the key-file tests (`keyfile_windows_test.go`) also run against the installed
 library: its refusals need no KEK, and reading back a real key file uses the test service. To provision a test host, run from `keywrapping/nativev1`:
 
-- Linux: `sudo scripts/provision-linux-test-key.sh` (the TPM-backed test KEK and policy; `--remove` undoes it)
+- Linux: `sudo scripts/provision-linux-test-key.sh` (the TPM-backed test KEK and policy; `--remove` undoes it). The derivation secret is made readable by the test account's primary group, which must be that account's alone; `--group NAME` names another group only it is in
 - macOS: `scripts/provision-macos-test-key.sh` as the account that runs the tests (`--remove` retires the KEK)
 - Windows: `./scripts/provision-windows-test-key.ps1` from an elevated PowerShell (`-Remove` retires
   the KEK; a provisioning run also retires the legacy `com.hkdfguard.native.windows.test`, after
@@ -504,28 +765,43 @@ Ubuntu, macOS (Apple silicon) and Windows. GitHub's runners have no HkdfGuard na
 the native round trips are reported as skipped there; a self-hosted runner with a provisioned test
 service runs them too. The real-KMS tests in `keywrapping/awskms`, the real-Key Vault tests in
 `keywrapping/azurekeyvault` and the real-Cloud KMS tests in `keywrapping/googlekms` are skipped
-there as well: CI names no test keys and holds no AWS, Azure or Google credentials. No secrets, no
-write permissions.
+there as well: CI names no test keys and holds no AWS, Azure or Google credentials. So are
+`options/certificate`'s real-store and real-keychain round trips and `systemdcredentials`' real
+`systemd-creds` round trip, which would change the runner's certificate store, keychain or
+credentials: each runs only when its `HKDFGUARD_TEST_*` variable asks. No secrets, no write
+permissions.
 
 A Go module is released by its tag alone: the Go module proxy serves the tagged source, so there
-is nothing to pack, sign or push to a feed. The seven published modules are tagged separately:
+is nothing to pack, sign or push to a feed. The twenty-two published modules share one version and are
+tagged together, at the same commit. Before tagging, set every nested module's requirement on the
+root module and on `securefile` to that version (each `go.mod` and `integration/go.mod`), then:
 
 ```sh
-git tag v0.1.0 && git push origin v0.1.0                                             # the root module
-git tag securefile/v0.1.0 && git push origin securefile/v0.1.0
-git tag cryptoprovider/aesgcm256/v0.1.0 && git push origin cryptoprovider/aesgcm256/v0.1.0
-git tag keywrapping/nativev1/v0.1.0 && git push origin keywrapping/nativev1/v0.1.0
-git tag keywrapping/awskms/v0.1.0 && git push origin keywrapping/awskms/v0.1.0       # after securefile
-git tag keywrapping/azurekeyvault/v0.1.0 && git push origin keywrapping/azurekeyvault/v0.1.0  # after securefile
-git tag keywrapping/googlekms/v0.1.0 && git push origin keywrapping/googlekms/v0.1.0  # after securefile
+version=v0.9.1
+tags=("${version}")
+for module in securefile cryptoprovider/aesgcm256 keywrapping/nativev1 keywrapping/awskms \
+    keywrapping/azurekeyvault keywrapping/googlekms keywrapping/hashicorpvault \
+    cache/awssecretsmanager cache/azurekeyvault cache/googlesecretmanager cache/hashicorpvault \
+    cache/filepersecret cache/jsonsecretsfile pipeline pipeline/awssecretsmanager pipeline/azurekeyvault \
+    pipeline/googlesecretmanager pipeline/hashicorpvault integration/configurationresolver \
+    options/certificate systemdcredentials; do
+  tags+=("${module}/${version}")
+done
+for tag in "${tags[@]}"; do git tag "${tag}"; done
+git push origin "${tags[@]}"
 ```
 
-The **Release** workflow (`release.yml`) then:
+The nested modules keep `replace` directives pointing the root module and `securefile` at their
+directories in this repository, so they build against this commit's code in development and CI. Go
+ignores a `replace` in a dependency, so a consumer gets the tagged versions instead - the same
+commit, because every module is tagged there.
+
+The **Release** workflow (`release.yml`) runs for each tag:
 
 1. **version**: turns the tag into the module it releases (`scripts/release-tag.sh`). A nested
-   module is refused while its `go.mod` still points at the root module with a `replace`
-   directive, or requires its placeholder version: remove the `replace` and require a tagged root
-   version first, then tag.
+   module is refused while its `go.mod` requires a placeholder version of the root module or
+   `securefile`, or has a `replace` other than one of this repository's modules by its own
+   directory.
 2. **build**: the same `build.yml` CI runs, on every OS.
 3. **publish**: archives the module's source at the tagged commit, attests its build provenance
    (`gh attestation verify <file> --repo runsecure/hkdfguard-go`), and creates the GitHub Release.
@@ -534,9 +810,3 @@ The **Release** workflow (`release.yml`) then:
 
 Unlike the .NET port there is no Azure sign-in and no `release` environment: Go modules are
 source, with nothing to Authenticode-sign. Third-party actions are pinned to full commit SHAs.
-
-Until the root module has a tagged release, `keywrapping/nativev1/go.mod`,
-`cryptoprovider/aesgcm256/go.mod`, `securefile/go.mod`, `keywrapping/awskms/go.mod`,
-`keywrapping/azurekeyvault/go.mod`, `keywrapping/googlekms/go.mod` and `integration/go.mod` point
-at it with `replace` directives; `keywrapping/awskms`, `keywrapping/azurekeyvault`,
-`keywrapping/googlekms` and `integration` point at `securefile` the same way until it is tagged.

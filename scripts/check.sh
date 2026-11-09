@@ -2,8 +2,9 @@
 #
 # Every check CI runs, in one place, so a developer runs exactly what a pull request will:
 # formatting, tidy module files, vet, build, the tests under the race detector, and govulncheck,
-# for each module - then type-checks the native key-wrapper and securefile modules for every
-# platform they support, whatever this host is. Stops at the first failure.
+# for each module - then type-checks the native key-wrapper, securefile, options/certificate and
+# systemdcredentials modules for every platform they support, whatever this host is. Stops at the
+# first failure.
 #
 # Usage (from the repository root, or anywhere):
 #   scripts/check.sh                       # every module
@@ -38,6 +39,14 @@
 #                          the secret caches' (cache/awssecretsmanager, cache/azurekeyvault,
 #                          cache/googlesecretmanager, cache/hashicorpvault) real-store integration
 #                          tests then run too; see each cache's how-to under docs/how-to.
+#   HKDFGUARD_TEST_WINDOWS_CERT_STORE  1 on Windows: options/certificate's real-store round trips
+#                          then run too, making and removing throwaway certificates in
+#                          CurrentUser\My with New-SelfSignedCertificate.
+#   HKDFGUARD_TEST_MACOS_KEYCHAIN  1 on macOS: options/certificate's real-keychain round trips then
+#                          run too, importing and deleting throwaway identities in the login
+#                          keychain.
+#   HKDFGUARD_TEST_SYSTEMD_CREDS  1 on Linux, as root or with --user credentials:
+#                          systemdcredentials' real systemd-creds round trip then runs too.
 #
 # The native round trips (keywrapping/nativev1, integration) are reported as skipped unless this
 # host has a provisioned test service; see keywrapping/nativev1/scripts. The real-KMS round trips
@@ -45,7 +54,8 @@
 # real-Key Vault ones (keywrapping/azurekeyvault) unless both Azure key identifiers are named, and
 # the real-Cloud KMS ones (keywrapping/googlekms) unless the Google key is named, the real-Vault
 # ones (keywrapping/hashicorpvault) unless the transit key is named, and each secret cache's
-# unless its secret is named.
+# unless its secret is named. options/certificate's real-store and real-keychain round trips and
+# systemdcredentials' real systemd-creds round trip are reported as skipped unless asked for.
 
 set -euo pipefail
 
@@ -54,7 +64,7 @@ cd "$(dirname "$0")/.."
 # Pinned, so a CI run is reproducible; the Go module proxy and checksum database verify it.
 readonly GOVULNCHECK_VERSION="v1.9.0"
 
-readonly ALL_MODULES=(. securefile cryptoprovider/aesgcm256 keywrapping/nativev1 keywrapping/awskms keywrapping/azurekeyvault keywrapping/googlekms keywrapping/hashicorpvault cache/awssecretsmanager cache/azurekeyvault cache/googlesecretmanager cache/hashicorpvault integration)
+readonly ALL_MODULES=(. securefile cryptoprovider/aesgcm256 keywrapping/nativev1 keywrapping/awskms keywrapping/azurekeyvault keywrapping/googlekms keywrapping/hashicorpvault cache/awssecretsmanager cache/azurekeyvault cache/googlesecretmanager cache/hashicorpvault cache/filepersecret cache/jsonsecretsfile pipeline pipeline/awssecretsmanager pipeline/azurekeyvault pipeline/googlesecretmanager pipeline/hashicorpvault integration/configurationresolver options/certificate systemdcredentials integration)
 modules=("$@")
 [[ ${#modules[@]} -gt 0 ]] || modules=("${ALL_MODULES[@]}")
 
@@ -116,6 +126,26 @@ note "securefile: type-checks for every supported platform"
     GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go vet ./...
     GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 go vet ./...
     GOOS=freebsd GOARCH=amd64 CGO_ENABLED=0 go vet ./...  # unsupported: refused at run time, must still build
+)
+
+note "options/certificate: type-checks for every supported platform"
+(
+    cd options/certificate
+    GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go vet ./...
+    GOOS=windows GOARCH=arm64 CGO_ENABLED=0 go vet ./...
+    GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go vet ./...
+    GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go vet ./...
+    GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 go vet ./...  # the keychain needs cgo: type-checked on macOS itself
+    GOOS=freebsd GOARCH=amd64 CGO_ENABLED=0 go vet ./... # no store: files only, must still build
+)
+
+note "systemdcredentials: type-checks for every supported platform"
+(
+    cd systemdcredentials
+    GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go vet ./...
+    GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go vet ./...
+    GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go vet ./...  # New refuses off Linux, but it must build
+    GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 go vet ./...
 )
 
 note "all checks passed"

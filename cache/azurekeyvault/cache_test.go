@@ -205,6 +205,39 @@ func TestAVaultFailure_IsReturnedAsTheResponseError_AndIsRetriedOnTheNextLookup(
 	}
 }
 
+// A secret answered with a 2xx status other than the 200 azsecrets expects is refused by the SDK,
+// which quotes the body in its error: the value is blanked before then, so neither the error nor
+// any body the SDK parsed holds it, and nothing is cached.
+func TestASecretAnsweredWithAnother2xxStatus_NeverReachesTheSDKsError(t *testing.T) {
+	for _, status := range []int{http.StatusCreated, http.StatusAccepted, http.StatusNonAuthoritativeInfo, http.StatusPartialContent} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			c, vault := newCache(t, fakeCredential{}, nil)
+			vault.set("item", "never-in-an-error")
+			vault.okStatus = status
+
+			_, err := c.Decrypt(t.Context(), "item", make([]byte, 32))
+			var responseErr *azcore.ResponseError
+			if !errors.As(err, &responseErr) || responseErr.StatusCode != status {
+				t.Fatalf("got %v; want a %d *azcore.ResponseError", err, status)
+			}
+			if strings.Contains(err.Error(), "never-in-an-error") {
+				t.Fatalf("the error quotes the secret: %v", err)
+			}
+			for _, body := range vault.bodies() {
+				if strings.Contains(body, "never-in-an-error") {
+					t.Fatalf("the SDK parsed the secret: %s", body)
+				}
+			}
+
+			vault.okStatus = 0
+			mustGet(t, c, "item", "never-in-an-error")
+			if gets := vault.getNames(); len(gets) != 2 {
+				t.Fatalf("Get Secret calls: %q; want 2 - the refused answer was cached", gets)
+			}
+		})
+	}
+}
+
 func TestAResponseThatIsNotJSON_IsRefused_AndNotRetried(t *testing.T) {
 	vault := newFakeVault()
 	vault.rawBody = "not json"

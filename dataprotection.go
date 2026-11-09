@@ -128,4 +128,71 @@ type PipelineDataProtector interface {
 	// on standard input (--dek-stdin), never as a command-line argument or environment variable,
 	// which process listings and logs capture.
 	KeyBase64() []byte
+
+	// WriteDEK writes the key to destination exactly as the wrap tool's --dek-stdin reads it - its
+	// base64 form as ASCII, with no line ending - and then flushes destination if it has a
+	// Flush() error method. For the wrap tool's standard input, local or remote: the stdin of
+	// "hkdfguard wrap ... --dek-stdin", or of "ssh -T host sudo -n hkdfguard wrap ... --dek-stdin".
+	// The bytes are written from a buffer zeroed once the write and flush complete; no string is
+	// ever made of them. Pass the pipe itself - exec.Cmd.StdinPipe's writer, say - and never a
+	// buffering writer such as a *bufio.Writer or bytes.Buffer, which keeps a copy of the key that
+	// nothing wipes. destination is left open: close it afterwards, so the tool sees the end of its
+	// input. ctx is checked before anything is written. Fails with ErrClosed once the protector is
+	// closed.
+	WriteDEK(ctx context.Context, destination io.Writer) error
+}
+
+// SecretPipelineWriter is the end of a provisioning pipeline that delivers secrets from a secret
+// store as one encrypted file per secret - the folder layout cache/filepersecret reads at runtime -
+// before a durable KEK exists. An implementation is given the secrets to pull and a
+// PipelineDataProtector when it is created; PullSecrets reads each secret and encrypts it at once,
+// bound to its file name, keeping only the encrypted value; WriteProtectedSecretFiles then writes
+// one file per secret, or WriteJSONSecrets one JSON file of them all (the file
+// cache/jsonsecretsfile reads) - each also to an io.Writer, as a tar archive of the files or as the
+// JSON, for a remote command's stdin. No key ring is involved: the protector's key is the only one,
+// and it is handed to the native platform's wrap process once the files are written.
+//
+// The protector belongs to the caller and is never closed by the writer. Closing the writer
+// releases whatever connection to the secret store it owns.
+type SecretPipelineWriter interface {
+	io.Closer
+
+	// ProtectedSecrets is every secret pulled, by file name: its value encrypted by the protector
+	// and formatted, as its file will hold it. Empty until PullSecrets completes. The map is a copy:
+	// changing it changes nothing in the writer.
+	ProtectedSecrets() map[string]string
+
+	// PullSecrets reads every secret the writer was created with and encrypts each value, keeping it
+	// in ProtectedSecrets - replacing whatever an earlier pull kept. ctx cancels the reads. A secret
+	// with no value is reported with an error once every other secret has been kept; any other
+	// failure keeps nothing.
+	PullSecrets(ctx context.Context) error
+
+	// WriteProtectedSecretFiles writes every secret in ProtectedSecrets as a file in folderPath -
+	// absolute or relative to the working directory - creating the folder if it doesn't exist: the
+	// file named for it, holding its encrypted, formatted value as UTF-8. It fails when folderPath is
+	// empty or no pull has completed.
+	WriteProtectedSecretFiles(folderPath string) error
+
+	// WriteJSONSecrets writes every secret in ProtectedSecrets to one JSON file at filePath -
+	// absolute or relative to the working directory - creating its folder if it doesn't exist: a
+	// single object with a member per secret, its file name mapped to its encrypted, formatted
+	// value. A file already there is replaced. It fails when filePath is empty or no pull has
+	// completed.
+	WriteJSONSecrets(filePath string) error
+
+	// WriteProtectedSecretFilesTo writes every secret in ProtectedSecrets to destination as a tar
+	// archive of the files WriteProtectedSecretFiles would write - for a remote tar to unpack, e.g.
+	// the stdin of "ssh -T host sudo -n tar -x --no-same-owner -f - -C folder". destination is
+	// flushed (when it has a Flush() error method) and left open: close it afterwards, so tar sees
+	// the end of its input. ctx cancels the write. It fails when destination is nil or no pull has
+	// completed.
+	WriteProtectedSecretFilesTo(ctx context.Context, destination io.Writer) error
+
+	// WriteJSONSecretsTo writes every secret in ProtectedSecrets to destination as the JSON object
+	// WriteJSONSecrets would write - for a remote command to store, e.g. the stdin of
+	// "ssh -T host sudo -n tee /etc/app/secrets.json". destination is flushed (when it has a
+	// Flush() error method) and left open: close it afterwards. ctx cancels the write. It fails
+	// when destination is nil or no pull has completed.
+	WriteJSONSecretsTo(ctx context.Context, destination io.Writer) error
 }

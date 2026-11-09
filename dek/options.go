@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -185,7 +186,8 @@ func (o Options) Config(keyWrapper hkdfguard.KeyWrapper, factory hkdfguard.Crypt
 
 // OptionsFromJSON reads Options from section of a JSON document - e.g. the "HkdfGuard" section of
 // an appsettings.json, or a nested path such as "Security:HkdfGuard". Section names match ignoring
-// case, and an empty section reads the whole document. Field names match ignoring case and unknown
+// case, and an empty section reads the whole document. A document with two members matching a
+// section name - "HkdfGuard" and "hkdfguard", say - is refused rather than one chosen. Field names match ignoring case and unknown
 // fields are ignored, as .NET's configuration binder does. The result is not validated; Config
 // does that.
 func OptionsFromJSON(document []byte, section string) (Options, error) {
@@ -196,15 +198,20 @@ func OptionsFromJSON(document []byte, section string) (Options, error) {
 			if err := json.Unmarshal(raw, &object); err != nil {
 				return Options{}, fmt.Errorf("dek: reading options section '%s': %w", section, err)
 			}
-			found := false
+			var matched []string
 			for key, value := range object {
 				if strings.EqualFold(key, name) {
-					raw, found = value, true
-					break
+					raw = value
+					matched = append(matched, key)
 				}
 			}
-			if !found {
+			switch len(matched) {
+			case 0:
 				return Options{}, fmt.Errorf("dek: the JSON document has no '%s' section", section)
+			case 1:
+			default:
+				slices.Sort(matched)
+				return Options{}, fmt.Errorf("dek: the JSON document's '%s' section is ambiguous: %q all match '%s' ignoring case", section, matched, name)
 			}
 		}
 	}

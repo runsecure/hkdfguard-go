@@ -16,6 +16,7 @@ import (
 
 	"github.com/runsecure/hkdfguard-go/cache"
 	"github.com/runsecure/hkdfguard-go/diagnostics"
+	"github.com/runsecure/hkdfguard-go/internal/vaultcheck"
 )
 
 // newCache is a cache over vault's KV engine, through a client made as newClient makes one.
@@ -464,7 +465,7 @@ func TestDisableRedirects_CanBeReadFromThisVersionOfTheClient(t *testing.T) {
 	vault := newFakeVault(t)
 	for _, want := range []bool{true, false} {
 		client := newClient(t, vault.server.URL, func(config *api.Config) { config.DisableRedirects = want })
-		if disables, known := disablesRedirects(client); !known || disables != want {
+		if disables, known := vaultcheck.DisablesRedirects(client); !known || disables != want {
 			t.Fatalf("want %v: got %v, known %v", want, disables, known)
 		}
 	}
@@ -672,5 +673,14 @@ func TestWithSensitiveLogging_AReadLogsThePathOnly_AndAFailureLogsAnError(t *tes
 	}
 	if strings.Contains(text, "never-logged") || strings.Contains(text, testToken) {
 		t.Fatalf("the log holds a secret: %s", text)
+	}
+}
+
+func TestAClientThatDoesntVerifyTLS_IsRefused(t *testing.T) {
+	vault := newFakeVault(t)
+	t.Setenv("VAULT_SKIP_VERIFY", "true")
+	_, err := New(newClient(t, vault.server.URL), newTestRing(t), Options{AllowRedirects: true})
+	if !errors.Is(err, ErrInvalidArgument) || !strings.Contains(err.Error(), "TLS certificate") {
+		t.Fatalf("got %v", err)
 	}
 }

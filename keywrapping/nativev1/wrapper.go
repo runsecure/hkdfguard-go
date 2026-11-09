@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io/fs"
 	"math"
+	"path/filepath"
 	"strings"
 
 	"github.com/runsecure/hkdfguard-go"
@@ -144,7 +145,9 @@ func (w *KeyWrapper) GenerateAndWrap(ctx context.Context, result []byte) (int, e
 // errors.Is(err, fs.ErrNotExist) for a missing file, errors.Is(err, fs.ErrPermission) for one this
 // account may not read or whose location isn't trusted, and errors.Is(err,
 // hkdfguard.ErrInvalidKeyFile) for one that isn't a wrapped key. An empty path never reaches the
-// native library.
+// native library, and a relative one reaches it resolved against the working directory - as
+// securefile resolves one - so the library checks every folder from the root down, and the file
+// read is the one named when the call was made.
 func (w *KeyWrapper) ReadKeyFile(ctx context.Context, path string) ([]byte, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -162,17 +165,27 @@ func openKeyFile(library kmsLibrary, path string) ([]byte, error) {
 	if strings.IndexByte(path, 0) >= 0 {
 		return nil, fmt.Errorf("nativev1: the key file path '%s' contains a NUL byte: %w", path, fs.ErrInvalid)
 	}
+	// The library is given the path resolved; errors name it as the caller did.
+	resolved := path
+	if !filepath.IsAbs(path) {
+		absolute, err := filepath.Abs(path)
+		if err != nil {
+			return nil, fmt.Errorf("nativev1: the key file path '%s' can't be resolved: %w", path, err)
+		}
+		resolved = absolute
+	}
 
 	buffer := make([]byte, hkdfguard.MaxWrappedKeyBytes)
-	status, read, err := library.openFile(path, buffer)
+	status, read, err := library.openFile(resolved, buffer)
+	if err == nil && status != statusOK {
+		err = &KeyFileError{Path: path, Status: status, Description: library.describeStatus(status)}
+	} else if err == nil && (read <= 0 || int(read) > len(buffer)) {
+		err = fmt.Errorf("nativev1: native KMS open-file for '%s' reported %d bytes read into a %d-byte buffer", path, read, len(buffer))
+	}
 	if err != nil {
+		// The library may have read some of the file before refusing it, a raw key among them.
+		hkdfguard.Wipe(buffer)
 		return nil, err
-	}
-	if status != statusOK {
-		return nil, &KeyFileError{Path: path, Status: status, Description: library.describeStatus(status)}
-	}
-	if read <= 0 || int(read) > len(buffer) {
-		return nil, fmt.Errorf("nativev1: native KMS open-file for '%s' reported %d bytes read into a %d-byte buffer", path, read, len(buffer))
 	}
 	return buffer[:read:read], nil
 }

@@ -6,11 +6,10 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
-	"sync"
 
 	"github.com/runsecure/hkdfguard-go"
 	"github.com/runsecure/hkdfguard-go/diagnostics"
-	"go.opentelemetry.io/otel/metric"
+	"github.com/runsecure/hkdfguard-go/internal/cachevalue"
 )
 
 // KeySeparator separates a secret's name from a key it holds: "app-config#api-key".
@@ -60,7 +59,8 @@ type RemoteOptions struct {
 	DefaultKey string
 
 	// Logger receives a debug record per fetched name while sensitive logging is enabled
-	// (diagnostics.Cache), and an error record per failed fetch.
+	// (diagnostics.Cache), and an error record per failed fetch and per cached value that fails to
+	// decrypt.
 	Logger *slog.Logger
 }
 
@@ -104,20 +104,10 @@ type RemoteCache struct {
 	matching   NameMatching
 	defaultKey string
 	logger     *slog.Logger
-
-	mu      sync.Mutex
-	fetches map[string]*fetch // one per uncached secret being fetched, by secret entry name
+	fetches    sharedFetches // one fetch per uncached secret, by secret entry name
 }
 
 var _ hkdfguard.ProtectedReadOnlyCache = (*RemoteCache)(nil)
-
-// fetch is one fetch of a secret, which every concurrent lookup of it waits on.
-type fetch struct {
-	done      chan struct{}
-	populated bool
-	err       error
-	cancelled bool // failed because the starter's context ended
-}
 
 // ErrInvalidKey reports a key no name can hold: see IsValidKey.
 var ErrInvalidKey = errors.New("cache: invalid key")
@@ -138,9 +128,8 @@ func NewRemote(ring hkdfguard.KeyRing, secrets SecretStore, options RemoteOption
 		matching:   options.Matching,
 		defaultKey: options.DefaultKey,
 		logger:     options.Logger,
-		fetches:    map[string]*fetch{},
 	}
-	c.store = store{ring: ring, populate: c.populateShared}
+	c.store = store{ring: ring, logger: options.Logger, populate: c.populateShared, names: c.namesIn}
 	return c, nil
 }
 
@@ -243,44 +232,24 @@ func unescapeCase(entry string) string {
 	return b.String()
 }
 
+// namesIn is every name a failure looking up entry - a secret's entry name, and possibly '#' and a
+// case-escaped key - could quote: the entry name, the secret's own name, and the key, as given.
+func (c *RemoteCache) namesIn(entry string) []string {
+	secretEntry, key, hasKey := strings.Cut(entry, string(KeySeparator))
+	names := []string{entry, secretEntry, c.secretName(secretEntry)}
+	if hasKey {
+		names = append(names, key, unescapeCase(key))
+	}
+	return names
+}
+
 // populateShared runs the fetch of the secret entryName belongs to, or waits for the one already
 // running; the store then looks entryName up again.
 func (c *RemoteCache) populateShared(ctx context.Context, entryName string) (bool, error) {
 	secretEntry, _, _ := strings.Cut(entryName, string(KeySeparator))
-	for {
-		c.mu.Lock()
-		running := c.fetches[secretEntry]
-		if running == nil {
-			f := &fetch{done: make(chan struct{})}
-			c.fetches[secretEntry] = f
-			c.mu.Unlock()
-			return c.runFetch(ctx, secretEntry, f)
-		}
-		c.mu.Unlock()
-
-		select {
-		case <-running.done:
-			if running.cancelled && ctx.Err() == nil {
-				continue // cancelled by the lookup that started it, not this one: fetch again
-			}
-			return running.populated, running.err
-		case <-ctx.Done():
-			return false, ctx.Err()
-		}
-	}
-}
-
-// runFetch makes fetch f, then releases every lookup waiting on it, whatever the outcome.
-func (c *RemoteCache) runFetch(ctx context.Context, secretEntry string, f *fetch) (populated bool, err error) {
-	defer func() {
-		f.populated, f.err = populated, err
-		f.cancelled = err != nil && ctx.Err() != nil
-		c.mu.Lock()
-		delete(c.fetches, secretEntry)
-		c.mu.Unlock()
-		close(f.done)
-	}()
-	return c.populate(ctx, secretEntry)
+	return c.fetches.do(ctx, secretEntry, func(ctx context.Context) (bool, error) {
+		return c.populate(ctx, secretEntry)
+	})
 }
 
 // populate fetches the secret stored under secretEntry, caching everything handed over; false if
@@ -290,22 +259,24 @@ func (c *RemoteCache) populate(ctx context.Context, secretEntry string) (bool, e
 	telemetry := diagnostics.Cache
 	ctx, span := telemetry.Start(ctx, diagnostics.SpanCachePopulate)
 	defer span.End()
-	if telemetry.SensitiveLoggingEnabled() {
-		telemetry.LogSensitiveOperation(span, diagnostics.SpanCachePopulate, diagnostics.AttrName.String(secret))
-		diagnostics.SensitiveOperationLogged(ctx, c.logger, diagnostics.SpanCachePopulate, secret)
-	}
+	telemetry.LogSensitiveOperation(span, diagnostics.SpanCachePopulate, diagnostics.AttrName.String(secret))
 
 	sink := &SecretSink{ctx: ctx, store: &c.store, secretEntry: secretEntry, values: map[string]*hkdfguard.KeyTrackingValue{}}
 	err := c.fetchInto(ctx, secret, sink)
 	sink.close()
 	if err != nil {
-		diagnostics.RecordError(span, err)
-		diagnostics.OperationFailed(ctx, c.logger, diagnostics.SpanCachePopulate, err)
-		recordPopulate(ctx, diagnostics.ResultError)
+		logged := telemetry.LoggedError(err, c.namesIn(secretEntry)...)
+		diagnostics.RecordError(span, logged)
+		diagnostics.OperationFailed(ctx, c.logger, diagnostics.SpanCachePopulate, logged)
+		cachevalue.RecordPopulate(ctx, diagnostics.ResultError)
 		return false, err
 	}
+	if telemetry.SensitiveLoggingEnabled() {
+		// Only once the fetch has returned: a record that says "completed" must not precede the outcome.
+		diagnostics.SensitiveOperationLogged(ctx, c.logger, diagnostics.SpanCachePopulate, secret)
+	}
 	if len(sink.values) == 0 {
-		recordPopulate(ctx, diagnostics.ResultNotFound)
+		cachevalue.RecordPopulate(ctx, diagnostics.ResultNotFound)
 		return false, nil
 	}
 
@@ -313,7 +284,7 @@ func (c *RemoteCache) populate(ctx context.Context, secretEntry string) (bool, e
 	for entry, value := range sink.values {
 		c.store.entries.LoadOrStore(matchKey(entry), value)
 	}
-	recordPopulate(ctx, diagnostics.ResultSuccess)
+	cachevalue.RecordPopulate(ctx, diagnostics.ResultSuccess)
 	return true, nil
 }
 
@@ -326,9 +297,4 @@ func (c *RemoteCache) fetchInto(ctx context.Context, secret string, sink *Secret
 		}
 	}()
 	return c.secrets.Fetch(ctx, secret, sink)
-}
-
-func recordPopulate(ctx context.Context, result string) {
-	diagnostics.CacheOperations().Add(ctx, 1, metric.WithAttributes(
-		diagnostics.AttrOperationName.String(diagnostics.SpanCachePopulate), diagnostics.AttrResult.String(result)))
 }

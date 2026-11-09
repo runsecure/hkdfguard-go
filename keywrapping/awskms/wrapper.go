@@ -14,6 +14,7 @@ import (
 	smithyhttp "github.com/aws/smithy-go/transport/http"
 
 	"github.com/runsecure/hkdfguard-go"
+	"github.com/runsecure/hkdfguard-go/diagnostics"
 	"github.com/runsecure/hkdfguard-go/securefile"
 )
 
@@ -151,7 +152,7 @@ func (w *KeyWrapper) Wrap(ctx context.Context, plaintext, result []byte) (int, e
 		Plaintext:           buffer,
 		EncryptionContext:   w.requestContext(),
 		EncryptionAlgorithm: types.EncryptionAlgorithmSpecSymmetricDefault,
-	})
+	}, withoutBodyLogging)
 	if err != nil {
 		return 0, w.classify(ctx, err, "wrap")
 	}
@@ -190,7 +191,7 @@ func (w *KeyWrapper) Unwrap(ctx context.Context, wrapped, result []byte) (n int,
 		CiphertextBlob:      ciphertext,
 		EncryptionContext:   w.requestContext(),
 		EncryptionAlgorithm: types.EncryptionAlgorithmSpecSymmetricDefault,
-	})
+	}, withoutBodyLogging)
 	if err != nil {
 		return 0, w.classify(ctx, err, "unwrap")
 	}
@@ -225,7 +226,7 @@ func (w *KeyWrapper) GenerateAndWrap(ctx context.Context, result []byte) (int, e
 		KeyId:             aws.String(w.keyID),
 		KeySpec:           types.DataKeySpecAes256,
 		EncryptionContext: w.requestContext(),
-	})
+	}, withoutBodyLogging)
 	if err != nil {
 		return 0, w.classify(ctx, err, "generate-and-wrap")
 	}
@@ -304,4 +305,17 @@ func (w *KeyWrapper) copyWrapped(ciphertext, result []byte, op string) (int, err
 		return 0, invalidArgument("The wrapped DEK is %d bytes; result holds %d.", len(ciphertext), len(result))
 	}
 	return copy(result, ciphertext), nil
+}
+
+// withoutBodyLogging is the per-call option every KMS call is made with: it turns the client's
+// request and response body logging (aws.LogRequestWithBody, aws.LogResponseWithBody) off - Encrypt's
+// request and Decrypt's response carry the plaintext DEK - unless sensitive logging is on for
+// diagnostics.KeyWrapping. It is decided on every call, so turning sensitive logging off takes
+// effect at once. With it on, a client logging bodies writes the DEK to its log: turn it on only to
+// debug, on a key you will rotate.
+func withoutBodyLogging(o *kms.Options) {
+	if diagnostics.KeyWrapping.SensitiveLoggingEnabled() {
+		return
+	}
+	o.ClientLogMode &^= aws.LogRequestWithBody | aws.LogResponseWithBody
 }

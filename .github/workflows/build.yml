@@ -4,13 +4,16 @@
 #
 # Runs scripts/check.sh - the same script a developer runs - on each supported OS: formatting,
 # tidy module files, vet, build, every module's tests under the race detector, govulncheck, and a
-# type-check of the native key-wrapper and securefile modules for every platform. The native round
-# trips are reported as skipped on GitHub's runners, which have no HkdfGuard native library
-# installed; a self-hosted runner with a provisioned test service runs them too. The real-KMS round
-# trips (keywrapping/awskms), real-Key Vault round trips (keywrapping/azurekeyvault) and real-Cloud
-# KMS round trips (keywrapping/googlekms) are reported as skipped too, as are the real-Vault round
-# trips (keywrapping/hashicorpvault) and the secret caches' real-store reads (cache/*): this
-# workflow sets no HKDFGUARD_TEST_* variable and holds no AWS, Azure, Google or Vault credentials.
+# type-check of the native key-wrapper, securefile, options/certificate and systemdcredentials
+# modules for every platform. The native round trips are reported as skipped on GitHub's runners,
+# which have no HkdfGuard native library installed; a self-hosted runner with a provisioned test
+# service runs them too. The real-KMS round trips (keywrapping/awskms), real-Key Vault round trips
+# (keywrapping/azurekeyvault) and real-Cloud KMS round trips (keywrapping/googlekms) are reported
+# as skipped too, as are the real-Vault round trips (keywrapping/hashicorpvault), the secret
+# caches' real-store reads (cache/*), and
+# options/certificate's real-store and real-keychain round trips and systemdcredentials' real
+# systemd-creds round trip: this workflow sets no HKDFGUARD_TEST_* variable and holds no AWS,
+# Azure, Google or Vault credentials.
 #
 # Holds no secrets and needs no write permission.
 name: Build
@@ -59,6 +62,15 @@ jobs:
             cache/azurekeyvault/go.sum
             cache/googlesecretmanager/go.sum
             cache/hashicorpvault/go.sum
+            cache/filepersecret/go.sum
+            cache/jsonsecretsfile/go.sum
+            pipeline/go.sum
+            pipeline/awssecretsmanager/go.sum
+            pipeline/azurekeyvault/go.sum
+            pipeline/googlesecretmanager/go.sum
+            pipeline/hashicorpvault/go.sum
+            integration/configurationresolver/go.sum
+            options/certificate/go.sum
             integration/go.sum
 
       - name: Check every module

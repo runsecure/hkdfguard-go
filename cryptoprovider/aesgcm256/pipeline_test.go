@@ -162,6 +162,93 @@ func TestPipeline_KeyBase64_IsTheKey_InOneReusedBuffer(t *testing.T) {
 	}
 }
 
+// flushRecorder is a destination that records what is written to it and whether it was flushed.
+type flushRecorder struct {
+	bytes.Buffer
+	flushed bool
+	closed  bool
+}
+
+func (f *flushRecorder) Flush() error { f.flushed = true; return nil }
+func (f *flushRecorder) Close() error { f.closed = true; return nil }
+
+func TestPipeline_WriteDEK_WritesTheBase64KeyAsASCII_WithoutALineEnding_AndLeavesTheDestinationOpen(t *testing.T) {
+	key := randomKey(t)
+	p, err := newPipelineDataProtector(testFormatProvider{}, pipelineVersion, bytes.Clone(key), defaultBudget())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+	stdin := &flushRecorder{}
+
+	if err := p.WriteDEK(t.Context(), stdin); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := stdin.String(); got != base64.StdEncoding.EncodeToString(key) || len(got) != 44 {
+		t.Errorf("wrote %q", got)
+	}
+	if !stdin.flushed || stdin.closed {
+		t.Errorf("flushed %v, closed %v; want flushed and left open", stdin.flushed, stdin.closed)
+	}
+	if p.base64 != nil {
+		t.Error("WriteDEK encoded through KeyBase64's buffer")
+	}
+
+	// A destination without Flush is written to just the same.
+	var plain bytes.Buffer
+	if err := p.WriteDEK(t.Context(), &plain); err != nil || plain.String() != base64.StdEncoding.EncodeToString(key) {
+		t.Errorf("wrote %q, %v", plain.String(), err)
+	}
+}
+
+func TestPipeline_WriteDEK_RefusesNoDestination_AClosedProtector_AndAnEndedContext(t *testing.T) {
+	p := newTestPipeline(t)
+	if err := p.WriteDEK(t.Context(), nil); err == nil {
+		t.Error("a nil destination was accepted")
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	var stdin bytes.Buffer
+	if err := p.WriteDEK(ctx, &stdin); !errors.Is(err, context.Canceled) || stdin.Len() != 0 {
+		t.Errorf("an ended context: %v, wrote %d bytes", err, stdin.Len())
+	}
+
+	_ = p.Close()
+
+	if err := p.WriteDEK(t.Context(), &stdin); !errors.Is(err, hkdfguard.ErrClosed) || stdin.Len() != 0 {
+		t.Errorf("after Close: %v, wrote %d bytes", err, stdin.Len())
+	}
+}
+
+// failingWriter fails every write, or - with failFlush - every flush.
+type failingWriter struct{ failFlush bool }
+
+var errWrite = errors.New("write failed")
+
+func (f failingWriter) Write(b []byte) (int, error) {
+	if f.failFlush {
+		return len(b), nil
+	}
+	return 0, errWrite
+}
+
+func (f failingWriter) Flush() error {
+	if f.failFlush {
+		return errWrite
+	}
+	return nil
+}
+
+func TestPipeline_WriteDEK_ReturnsAFailedWriteOrFlush(t *testing.T) {
+	p := newTestPipeline(t)
+	for _, w := range []failingWriter{{}, {failFlush: true}} {
+		if err := p.WriteDEK(t.Context(), w); !errors.Is(err, errWrite) {
+			t.Errorf("failFlush %v: %v; want the write's error", w.failFlush, err)
+		}
+	}
+}
+
 func TestPipeline_CountsAgainstTheKeysBudget(t *testing.T) {
 	budget, _ := newEncryptionBudget(1, 2)
 	p, _ := newPipelineDataProtector(testFormatProvider{}, pipelineVersion, randomKey(t), budget)

@@ -59,7 +59,7 @@ From the repository root:
 VAULT_ADDR=http://127.0.0.1:8200 VAULT_TOKEN=<root token> scripts/provision-vault-transit-test-key.sh
 ```
 
-The script uses the root token only to provision. It:
+The script uses the root token only to provision, and never puts it on a command line, where other accounts could read it: curl reads it as a header file (curl 7.55 or later). It:
 
 1. enables a transit engine at `transit` if nothing is mounted there;
 2. creates two `aes256-gcm96` keys, `hkdfguard-test` and `hkdfguard-test-other`;

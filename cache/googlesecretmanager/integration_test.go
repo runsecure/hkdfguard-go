@@ -12,6 +12,7 @@ import (
 	secretmanager "cloud.google.com/go/secretmanager/apiv1"
 
 	"github.com/runsecure/hkdfguard-go/cache"
+	"github.com/runsecure/hkdfguard-go/internal/gsmcheck"
 	"github.com/runsecure/hkdfguard-go/internal/kmstest"
 )
 
@@ -66,12 +67,12 @@ func configuredSecret(t *testing.T) (project, secretID string) {
 
 // parseSecretName splits projects/{project}/secrets/{secret}.
 func parseSecretName(name string) (project, secretID string, ok bool) {
-	secret, ok := secretOfVersion(name + "/versions/latest")
+	secret, ok := gsmcheck.SecretOfVersion(name + "/versions/latest")
 	if !ok || !IsValidSecretName(secret) {
 		return "", "", false
 	}
 	project = name[len("projects/") : len(name)-len("/secrets/")-len(secret)]
-	return project, secret, isProjectID(project)
+	return project, secret, gsmcheck.IsProjectID(project)
 }
 
 // expected is the JSON object the secret holds, by member - each as Decrypt reveals it - and whole;

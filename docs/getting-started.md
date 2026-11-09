@@ -12,8 +12,8 @@ It takes about 20 minutes. You need one of:
 
 And, on either:
 
-- Go 1.25 or later. The modules name Go 1.27.3 in their `toolchain` directive, so `go` downloads
-  it on first use.
+- Go 1.26 or later for the root module, and Go 1.27.1 or later for the others. The modules name
+  Go 1.27.3 in their `toolchain` directive, so `go` downloads it on first use.
 - The HkdfGuard native package for your platform.
 
 Linux works the same way with its own paths and a TPM-backed KEK; see the

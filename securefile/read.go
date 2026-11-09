@@ -8,11 +8,30 @@ import (
 	"strings"
 )
 
+// keyFileNoun and trustedFileNoun are what the platform reads call the file in their messages.
+const (
+	keyFileNoun     = "key file"
+	trustedFileNoun = "file"
+)
+
+// capitalized is noun with its first letter upper-cased, to begin a message with: "Key file".
+func capitalized(noun string) string {
+	if noun == "" || noun[0] < 'a' || noun[0] > 'z' {
+		return noun
+	}
+	return string(noun[0]-('a'-'A')) + noun[1:]
+}
+
+// readFunc reads into the slice it is given, returning the count; 0 (or io.EOF) at the end. An
+// error it returns is passed on as it is.
+type readFunc func([]byte) (int, error)
+
 // ReadTrustedKeyFile reads the key file at path, still wrapped, refusing it unless only the
 // operating system's administrators and trust could have written or replaced it, and refusing
 // contents that aren't a wrapped key: the Go equivalent of the native library's
 // hkdfguard_open_file, for a hkdfguard.KeyWrapper's ReadKeyFile with no native library to read
-// through - a network KMS's key wrapper, say. See the package documentation for the rules.
+// through - a network KMS's key wrapper, say. It opens the file as ReadTrustedFile does. See the
+// package documentation for the rules.
 //
 // path is absolute or relative to the working directory. trust is who besides administrators is
 // trusted; AdministratorsOnly() (the zero KeyFileTrust) for no one. ctx is checked before anything
@@ -25,19 +44,34 @@ import (
 // be trusted, ErrInvalidTrust; a platform other than Windows, Linux or Apple silicon macOS,
 // ErrUnsupportedPlatform.
 func ReadTrustedKeyFile(ctx context.Context, path string, trust KeyFileTrust) ([]byte, error) {
-	if err := ctx.Err(); err != nil {
+	if err := checkReadable(ctx, path, keyFileNoun); err != nil {
 		return nil, err
+	}
+	var contents []byte
+	err := openOnPlatform(path, trust, keyFileNoun, func(read readFunc, name string) error {
+		var err error
+		contents, err = readContents(read, name)
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+	return contents, nil
+}
+
+// checkReadable refuses, before anything is examined, a read whose context has ended, an empty
+// path or one holding a NUL, and a platform files are not read on.
+func checkReadable(ctx context.Context, path, noun string) error {
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 	if path == "" {
-		return nil, fmt.Errorf("securefile: a key file path is required: %w", fs.ErrInvalid)
+		return fmt.Errorf("securefile: a %s path is required: %w", noun, fs.ErrInvalid)
 	}
 	if strings.IndexByte(path, 0) >= 0 {
-		return nil, fmt.Errorf("securefile: a key file path can't contain a NUL character: %w", fs.ErrInvalid)
+		return fmt.Errorf("securefile: a %s path can't contain a NUL character: %w", noun, fs.ErrInvalid)
 	}
-	if err := platformSupport(runtime.GOOS, runtime.GOARCH); err != nil {
-		return nil, err
-	}
-	return readOnPlatform(path, trust)
+	return platformSupport(runtime.GOOS, runtime.GOARCH)
 }
 
 // platformSupport refuses every platform but Windows, Linux and Apple silicon macOS. The .NET and
@@ -49,10 +83,10 @@ func platformSupport(goos, goarch string) error {
 		return nil
 	case "darwin":
 		if goarch != "arm64" {
-			return unsupported("Key files are read on Apple silicon Macs only; this process is %s.", goarch)
+			return unsupported("Trusted files are read on Apple silicon Macs only; this process is %s.", goarch)
 		}
 		return nil
 	default:
-		return unsupported("Key files are read on Windows, Linux and macOS only.")
+		return unsupported("Trusted files are read on Windows, Linux and macOS only.")
 	}
 }

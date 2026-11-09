@@ -18,9 +18,11 @@ type sinkKey struct{}
 // string. It acts only on a request whose context carries a sink (Fetch's): it stops azcore
 // buffering that response, so the body comes straight off the network into
 // cache.CaptureJSONBody's own buffer, hands its top-level value to the sink, and gives the SDK the
-// body with value blanked. Any other response to such a request - Key Vault's 401 challenge, an
-// error - is buffered as azcore would have, for the SDK's error handling. Every other request
-// passes through untouched.
+// body with value blanked. That is done for every 2xx answer, not only the 200 azsecrets expects:
+// the SDK turns any other status into an *azcore.ResponseError quoting the body, so a 2xx body it
+// refuses must already be blanked - and the fetch then fails, so the cache keeps nothing the sink
+// took. Any other response to such a request - Key Vault's 401 challenge, an error - is buffered as
+// azcore would have, for the SDK's error handling. Every other request passes through untouched.
 //
 // It is one of the client's per-retry policies, so it runs on every try, and azcore's
 // body-download policy, which would otherwise read the whole body into a []byte nothing zeroes,
@@ -40,7 +42,7 @@ func (capturePolicy) Do(req *policy.Request) (*http.Response, error) {
 	if err != nil || resp.Body == nil {
 		return resp, err
 	}
-	if resp.StatusCode != http.StatusOK {
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		if _, err := runtime.Payload(resp); err != nil {
 			return resp, err
 		}

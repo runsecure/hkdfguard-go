@@ -5,10 +5,10 @@ go 1.27.1
 toolchain go1.27.3
 
 require (
-	github.com/runsecure/hkdfguard-go v0.0.0-00010101000000-000000000000
-	go.opentelemetry.io/otel v1.46.0
-	go.opentelemetry.io/otel/sdk v1.46.0
-	go.opentelemetry.io/otel/trace v1.46.0
+	github.com/runsecure/hkdfguard-go v0.9.1
+	go.opentelemetry.io/otel v1.47.0
+	go.opentelemetry.io/otel/sdk v1.47.0
+	go.opentelemetry.io/otel/trace v1.47.0
 )
 
 require (
@@ -17,8 +17,9 @@ require (
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
-	go.opentelemetry.io/otel/metric v1.46.0 // indirect
-	golang.org/x/sys v0.47.0 // indirect
+	go.opentelemetry.io/otel/log v1.47.0 // indirect
+	go.opentelemetry.io/otel/metric v1.47.0 // indirect
+	golang.org/x/sys v0.49.0 // indirect
 )
 
 replace github.com/runsecure/hkdfguard-go => ../..

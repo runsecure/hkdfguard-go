@@ -48,7 +48,8 @@ const (
 	// Windows-specific (-64..-79), refining errPolicyInvalid
 	errWinGroupInvalid = -64
 
-	// Linux-specific (-80..-95): none defined yet
+	// Linux-specific (-80..-95), refining errPolicyInvalid
+	errLinuxGroupInvalid = -80
 
 	// macOS-specific (-96..-111), each refining errProviderError
 	errMacAccessControlCreationFailed = -96
@@ -86,6 +87,7 @@ var statusDescriptions = map[int32]string{
 	errFileMalformed:                  "the key file is the right size, but is not a valid wrapped DEK",
 	errFileUntrusted:                  "the key file's path is not trusted: a link or reparse point, a short or network path, or a file or folder another account could replace",
 	errWinGroupInvalid:                `an HKLM\Software\Policies\HkdfGuard\KeyUseGroups entry is unresolvable, not a group, not host-local, or over-broad`,
+	errLinuxGroupInvalid:              "a deployer group (deployer_groups in the policy, or hkdfguard-deployers) doesn't exist, is over-broad, or can't be looked up; every key-file read fails until it is fixed",
 	errMacAccessControlCreationFailed: "the access policy for a new KEK could not be created",
 	errMacKeyGenerationFailed:         "the Secure Enclave refused to generate a key",
 	errMacKeychainWriteFailed:         "the new KEK could not be stored in the keychain",
@@ -125,6 +127,7 @@ var linuxStatusHints = map[int32]string{
 var macStatusHints = map[int32]string{
 	errProviderUnavailable:    "this Mac has no Secure Enclave",
 	errPayloadAuthFailed:      "AES-GCM authentication failed: the payload was altered, or wrapped for another service under this KEK",
+	errPayloadUnsupported:     "the wrapped payload's suite is one this native library doesn't implement, or one this Mac's policy refuses (RequirePostQuantum refuses a P-256 payload); check the KEK suite settings in the HkdfGuard policy",
 	errKEKNotFound:            "no KEK is provisioned for this service in this keychain mode; run hkdfguard provision",
 	errKEKAccessDenied:        "the keychain denied access: it is locked, there is no session to prompt in, or this process isn't allowed",
 	errKEKInvalid:             "the keychain item for this service can't be reconstructed into a key",

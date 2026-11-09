@@ -6,7 +6,9 @@
 // It is a module of its own so the published modules never depend on each other: it requires all
 // of them (the root module, cryptoprovider/aesgcm256, keywrapping/nativev1, keywrapping/awskms,
 // keywrapping/azurekeyvault, keywrapping/googlekms and securefile) through replace directives, is
-// never tagged or published, and contains only tests.
+// never tagged or published, and contains only tests. The configurationresolver folder below it is
+// not part of it: integration/configurationresolver is a separate, published module, with its own
+// go.mod.
 // Run them from this directory:
 //
 //	CGO_ENABLED=1 go test ./...   (cgo on macOS and Linux; Windows needs neither)

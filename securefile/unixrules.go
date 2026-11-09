@@ -7,9 +7,9 @@ import (
 	"strings"
 )
 
-// The Linux and macOS key-file location rules, kept free of system calls: they take lstat and
-// readlink as arguments, so the tests run them against simulated filesystems on every platform.
-// read_unix.go wires them to the real calls.
+// The Linux and macOS location rules for a key file - or any file ReadTrustedFile reads - kept free
+// of system calls: they take lstat and readlink as arguments, so the tests run them against
+// simulated filesystems on every platform. read_unix.go wires them to the real calls.
 
 // unixFileType is what kind of file lstat reports.
 type unixFileType int
@@ -43,15 +43,18 @@ type unixFileStatus struct {
 	mode uint32
 	// fileType is what kind of file it is - a symbolic link is reported as such, never followed.
 	fileType unixFileType
-	// aclWriters is every named user and group a POSIX access ACL lets write it (Linux), read only
-	// when the group-write bit is set: with an ACL that bit is the ACL's mask, which caps every
-	// named entry, so when it is clear no named entry can write and nothing needs reading.
+	// aclWriters is every named user and group its ACL lets write it. On Linux that is a POSIX
+	// access ACL, read only when the group-write bit is set: with an ACL that bit is the ACL's
+	// mask, which caps every named entry, so when it is clear no named entry can write and nothing
+	// needs reading. On macOS it is an extended ACL (darwinACLWriters), which is independent of the
+	// mode bits and so is read whatever the mode.
 	aclWriters []aclWriter
 }
 
-// aclWriter is a named user or group entry of a POSIX access ACL that grants write.
+// aclWriter is a user or group an ACL entry lets write: a named entry of a POSIX access ACL
+// (Linux), or an allow entry of an extended ACL (macOS).
 type aclWriter struct {
-	group bool // a named group (ACL_GROUP), not a named user (ACL_USER)
+	group bool // a group (ACL_GROUP; a GID qualifier on macOS), not a user (ACL_USER; a UID)
 	id    uint32
 }
 
@@ -111,8 +114,10 @@ type unixReadLinkFunc func(path string) (target string, ok bool, err error)
 // owned by root or a KeyFileTrust user, must not be writable by others, and may be writable by its
 // group only if that is a KeyFileTrust group. On Linux, a group-writable one may also carry a POSIX
 // access ACL only if every named user and group it lets write is trusted too (the group-write bit is
-// then the ACL's mask, so a write grant there would otherwise go unseen). A symbolic link is followed only if a trusted user
-// owns it, and its target is then checked in turn - so macOS's root-owned /etc to private/etc
+// then the ACL's mask, so a write grant there would otherwise go unseen). On macOS, any of them may
+// carry an extended ACL (chmod +a) only if every user and group an allow entry lets write is
+// trusted too: "everyone" is gid 12, so "everyone allow write" is refused unless that group is
+// listed. A symbolic link is followed only if a trusted user owns it, and its target is then checked in turn - so macOS's root-owned /etc to private/etc
 // works, and a link anyone else made doesn't. Nothing under /tmp, /var/tmp or another
 // world-writable directory passes, sticky or not.
 //
@@ -154,7 +159,7 @@ func resolveTrusted(path string, trust KeyFileTrust, getStatus unixStatusFunc, r
 		}
 
 		if resolvedType != unixDirectory {
-			return "", keyFileError(fs.ErrNotExist, path, "Key file '%s' runs through '%s', which is not a directory.", path, resolved)
+			return "", keyFileError(fs.ErrNotExist, path, "'%s' runs through '%s', which is not a directory.", path, resolved)
 		}
 
 		if name == ".." {
@@ -172,7 +177,7 @@ func resolveTrusted(path string, trust KeyFileTrust, getStatus unixStatusFunc, r
 			return "", err
 		}
 		if !found {
-			return "", keyFileError(fs.ErrNotExist, path, "Key file '%s' was not found ('%s' does not exist).", path, candidate)
+			return "", keyFileError(fs.ErrNotExist, path, "'%s' was not found ('%s' does not exist).", path, candidate)
 		}
 
 		if status.fileType == unixSymbolicLink {
@@ -222,8 +227,9 @@ func requireTrusted(candidate string, status unixFileStatus, trust KeyFileTrust,
 	if status.mode&groupWrite != 0 && !trust.isTrustedGroup(status.groupID) {
 		return untrustedUnix(path, "'%s' is writable by group %d, which is not a trusted group", candidate, status.groupID)
 	}
-	// With an access ACL the group-write bit is its mask, and a named entry can grant write that the
-	// owner and group alone don't show: each must be trusted too.
+	// An ACL entry can grant write that the owner and group alone don't show (on Linux, a named
+	// entry under a group-write mask; on macOS, an extended ACL's allow entry): each must be
+	// trusted too.
 	for _, writer := range status.aclWriters {
 		if writer.group && !trust.isTrustedGroup(writer.id) {
 			return untrustedUnix(path, "its access ACL lets group %d write '%s', and that is not a trusted group", writer.id, candidate)
@@ -235,10 +241,11 @@ func requireTrusted(candidate string, status unixFileStatus, trust KeyFileTrust,
 	return nil
 }
 
-// untrustedUnix is the refusal of a key file whose location isn't trusted.
+// untrustedUnix is the refusal of a file - a key file, or one ReadTrustedFile reads - whose location
+// isn't trusted.
 func untrustedUnix(path, format string, args ...any) *KeyFileError {
 	return keyFileError(ErrUntrusted, path,
-		"Key file '%s' is not trusted: %s. Keep key files where only root (or a trusted deployer, see KeyFileTrust) can write, all the way up from /.",
+		"'%s' is not trusted: %s. Keep it where only root (or a trusted deployer, see KeyFileTrust) can write, all the way up from /.",
 		path, fmt.Sprintf(format, args...))
 }
 

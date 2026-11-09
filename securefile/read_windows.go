@@ -22,74 +22,75 @@ const (
 	volumeNameDOS      = 0x0 // VOLUME_NAME_DOS
 )
 
-// readOnPlatform wires the windowsrules.go rules to real files through Win32; exercised by the
-// Windows-only real-file tests.
-func readOnPlatform(path string, trust KeyFileTrust) ([]byte, error) {
+// openOnPlatform wires the windowsrules.go rules to real files through Win32, then hands consume a
+// read function over the open file and the full path to name in its messages; exercised by the
+// Windows-only real-file tests. noun is what the messages call the file ("key file").
+func openOnPlatform(path string, trust KeyFileTrust, noun string, consume func(read readFunc, name string) error) error {
 	trusted, err := trustedPrincipals(trust, canonicalSID, accountName)
 	if err != nil {
-		return nil, err
+		return err
 	}
-	full, err := fullPath(path)
+	full, err := fullPath(path, noun)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	driveType := uint32(driveNetwork)
 	if !strings.HasPrefix(full, `\\`) {
 		driveType = getDriveType(filepath.VolumeName(full) + `\`)
 	}
 	if err := verifyPathForm(full, driveType); err != nil {
-		return nil, err
+		return err
 	}
 
 	// Read sharing only: refused if another process has it open for writing, and no one can open
 	// it for writing while it's read.
-	file, err := openFile(full)
+	file, err := openFile(full, noun)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	defer windows.CloseHandle(file)
 
 	final, err := finalPath(file)
 	if err != nil {
-		return nil, readFailure(full, err)
+		return readFailure(full, noun, err)
 	}
 	if err := verifyFinalPath(full, final); err != nil {
-		return nil, err
+		return err
 	}
 
 	// The file through its own handle; the folders by path, which the final-path check ties to the
 	// folders it was opened through, and which no untrusted principal can then change.
 	security, err := describeSecurity(windows.GetSecurityInfo(file, windows.SE_FILE_OBJECT, windows.OWNER_SECURITY_INFORMATION|windows.DACL_SECURITY_INFORMATION))
 	if err != nil {
-		return nil, securityFailure(full, full, err)
+		return securityFailure(full, full, noun, err)
 	}
 	if err := verifyTrustedOnly(security, full, full, guardedRights, trusted, accountName); err != nil {
-		return nil, err
+		return err
 	}
 	for folder := filepath.Dir(full); ; folder = filepath.Dir(folder) {
 		descriptor, err := describeSecurity(windows.GetNamedSecurityInfo(folder, windows.SE_FILE_OBJECT,
 			windows.OWNER_SECURITY_INFORMATION|windows.DACL_SECURITY_INFORMATION))
 		if err != nil {
-			return nil, securityFailure(full, folder, err)
+			return securityFailure(full, folder, noun, err)
 		}
 		if filepath.Dir(folder) == folder {
 			if err := verifyTrustedOnly(descriptor, full, folder, guardedRootRights, trusted, accountName); err != nil {
-				return nil, err
+				return err
 			}
 			break
 		}
 		if err := verifyNotReparsePoint(fileAttributes(folder), full, folder); err != nil {
-			return nil, err
+			return err
 		}
 		if err := verifyTrustedOnly(descriptor, full, folder, guardedRights, trusted, accountName); err != nil {
-			return nil, err
+			return err
 		}
 	}
 
-	return readContents(func(buffer []byte) (int, error) {
+	return consume(func(buffer []byte) (int, error) {
 		var read uint32
 		if err := windows.ReadFile(file, buffer, &read, nil); err != nil {
-			return 0, readFailure(full, err)
+			return 0, readFailure(full, noun, err)
 		}
 		return int(read), nil
 	}, full)
@@ -99,18 +100,18 @@ func readOnPlatform(path string, trust KeyFileTrust) ([]byte, error) {
 // relative path resolved against the working directory), with every 8.3 short name that exists on
 // disk expanded to its long name. A short name for something that doesn't exist stays short, and
 // the final-path check then refuses it.
-func fullPath(path string) (string, error) {
+func fullPath(path, noun string) (string, error) {
 	pointer, err := windows.UTF16PtrFromString(path)
 	if err != nil {
-		return "", readFailure(path, err)
+		return "", readFailure(path, noun, err)
 	}
 	buffer := make([]uint16, maxPathChars)
 	length, err := windows.GetFullPathName(pointer, uint32(len(buffer)), &buffer[0], nil)
 	if err != nil {
-		return "", readFailure(path, err)
+		return "", readFailure(path, noun, err)
 	}
 	if length == 0 || length >= uint32(len(buffer)) {
-		return "", readFailure(path, windows.ERROR_FILENAME_EXCED_RANGE)
+		return "", readFailure(path, noun, windows.ERROR_FILENAME_EXCED_RANGE)
 	}
 	full := windows.UTF16ToString(buffer[:length])
 	if strings.Contains(full, "~") {
@@ -157,12 +158,12 @@ func fileAttributes(path string) uint32 {
 	return attributes
 }
 
-// openFile opens the key file for reading with read sharing only - refused if another process has
+// openFile opens the file for reading with read sharing only - refused if another process has
 // it open for writing, and no one can open it for writing while it is held.
-func openFile(full string) (windows.Handle, error) {
+func openFile(full, noun string) (windows.Handle, error) {
 	pointer, err := windows.UTF16PtrFromString(full)
 	if err != nil {
-		return windows.InvalidHandle, readFailure(full, err)
+		return windows.InvalidHandle, readFailure(full, noun, err)
 	}
 	handle, err := windows.CreateFile(pointer, windows.GENERIC_READ, windows.FILE_SHARE_READ, nil, windows.OPEN_EXISTING,
 		windows.FILE_ATTRIBUTE_NORMAL|windows.FILE_FLAG_SEQUENTIAL_SCAN, 0)
@@ -173,13 +174,13 @@ func openFile(full string) (windows.Handle, error) {
 	errors.As(err, &errno)
 	switch errno {
 	case windows.ERROR_FILE_NOT_FOUND, windows.ERROR_PATH_NOT_FOUND, windows.ERROR_INVALID_NAME:
-		return windows.InvalidHandle, keyFileError(fs.ErrNotExist, full, "Key file '%s' was not found.", full)
+		return windows.InvalidHandle, keyFileError(fs.ErrNotExist, full, "%s '%s' was not found.", capitalized(noun), full)
 	case windows.ERROR_ACCESS_DENIED:
-		return windows.InvalidHandle, keyFileError(fs.ErrPermission, full, "This account may not read key file '%s' (or it is a folder).", full)
+		return windows.InvalidHandle, keyFileError(fs.ErrPermission, full, "This account may not read %s '%s' (or it is a folder).", noun, full)
 	case windows.ERROR_SHARING_VIOLATION:
-		return windows.InvalidHandle, keyFileError(ErrBusy, full, "Key file '%s' is open for writing by another process.", full)
+		return windows.InvalidHandle, keyFileError(ErrBusy, full, "%s '%s' is open for writing by another process.", capitalized(noun), full)
 	default:
-		return windows.InvalidHandle, keyFileError(err, full, "Could not open key file '%s' (Windows error %d).", full, uint32(errno))
+		return windows.InvalidHandle, keyFileError(err, full, "Could not open %s '%s' (Windows error %d).", noun, full, uint32(errno))
 	}
 }
 
@@ -288,16 +289,16 @@ func accountName(text string) string {
 	return account
 }
 
-func securityFailure(full, item string, err error) error {
+func securityFailure(full, item, noun string, err error) error {
 	if errors.Is(err, windows.ERROR_ACCESS_DENIED) {
-		return keyFileError(fs.ErrPermission, full, "Key file '%s': this account may not read the permissions of '%s'.", full, item)
+		return keyFileError(fs.ErrPermission, full, "%s '%s': this account may not read the permissions of '%s'.", capitalized(noun), full, item)
 	}
 	var errno windows.Errno
 	errors.As(err, &errno)
-	return keyFileError(err, full, "Key file '%s': could not read the security descriptor of '%s' (Windows error %d).", full, item, uint32(errno))
+	return keyFileError(err, full, "%s '%s': could not read the security descriptor of '%s' (Windows error %d).", capitalized(noun), full, item, uint32(errno))
 }
 
-// readFailure reports a Win32 call's own failure as the key file's.
-func readFailure(path string, err error) error {
-	return keyFileError(err, path, "Could not read key file '%s': %v.", path, err)
+// readFailure reports a Win32 call's own failure as the file's.
+func readFailure(path, noun string, err error) error {
+	return keyFileError(err, path, "Could not read %s '%s': %v.", noun, path, err)
 }

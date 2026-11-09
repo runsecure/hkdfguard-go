@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -33,6 +35,7 @@ type fakeLibrary struct {
 	openFilePayload []byte
 	openFileRead    *int32 // overrides the count read on success
 	openFileErr     error  // the library has no open-file call
+	openFileOut     []byte // the buffer the last open-file call was given
 	openFilePaths   []string
 	openFileCaps    []int
 }
@@ -93,13 +96,16 @@ func (f *fakeLibrary) describeStatus(status int32) string {
 func (f *fakeLibrary) openFile(path string, out []byte) (int32, int32, error) {
 	f.openFilePaths = append(f.openFilePaths, path)
 	f.openFileCaps = append(f.openFileCaps, len(out))
+	f.openFileOut = out
+	// A library that read some of the file before refusing it leaves those bytes behind.
+	copy(out, f.openFilePayload)
 	if f.openFileErr != nil {
 		return 0, 0, f.openFileErr
 	}
 	if f.openFileStatus != statusOK {
 		return f.openFileStatus, 0, nil
 	}
-	n := int32(copy(out, f.openFilePayload))
+	n := int32(len(f.openFilePayload))
 	if f.openFileRead != nil {
 		n = *f.openFileRead
 	}
@@ -325,5 +331,46 @@ func TestAnInvalidServiceName_IsRejectedBeforeAnyNativeCall(t *testing.T) {
 		if calls := library.wrapCalls + library.unwrapCalls + library.generateCalls; calls != 0 {
 			t.Errorf("%q: library called %d times", name, calls)
 		}
+	}
+}
+
+// A refused key file - a raw key, perhaps - is not left in the buffer the library read it into.
+func TestOpenKeyFile_WipesTheBufferOnEveryRefusal(t *testing.T) {
+	tooMany := int32(hkdfguard.MaxWrappedKeyBytes + 1)
+	zero := int32(0)
+	for name, f := range map[string]*fakeLibrary{
+		"a refusal status":      {openFileStatus: 7},
+		"no open-file call":     {openFileErr: errors.New("no such entry point")},
+		"an impossible count":   {openFileRead: &tooMany},
+		"nothing read, it says": {openFileRead: &zero},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f.openFilePayload = []byte("raw-key-material-raw-key-material")
+			if _, err := openKeyFile(f, "key.bin"); err == nil {
+				t.Fatal("openKeyFile succeeded")
+			}
+			if !bytes.Equal(f.openFileOut, make([]byte, len(f.openFileOut))) {
+				t.Fatal("the buffer still holds what the library read")
+			}
+		})
+	}
+}
+
+// A relative key-file path reaches the library resolved against the working directory; an absolute
+// one reaches it as given.
+func TestOpenKeyFile_ResolvesARelativePath(t *testing.T) {
+	working, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	absolute := filepath.Join(working, "keys", "v1.key")
+	f := &fakeLibrary{openFilePayload: []byte("wrapped")}
+	for _, path := range []string{filepath.Join("keys", "v1.key"), absolute} {
+		if _, err := openKeyFile(f, path); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(f.openFilePaths) != 2 || f.openFilePaths[0] != absolute || f.openFilePaths[1] != absolute {
+		t.Fatalf("the library was given %q; want %q twice", f.openFilePaths, absolute)
 	}
 }
