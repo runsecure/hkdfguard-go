@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -20,13 +21,14 @@ func TestReadKeyFile_ReturnsExactlyTheBytesTheLibraryRead(t *testing.T) {
 	payload := bytes.Repeat([]byte{0x5A}, 132)
 	library := &fakeLibrary{openFilePayload: payload}
 	w := mustWrapper(t, "service.k", library)
+	path := filepath.Join(t.TempDir(), "v1.bin") // absolute on every platform, so passed on as it is
 
-	read, err := w.ReadKeyFile(context.Background(), `C:\keys\v1.bin`)
+	read, err := w.ReadKeyFile(context.Background(), path)
 
 	if err != nil || !bytes.Equal(read, payload) || len(read) != 132 || cap(read) != 132 {
 		t.Fatalf("ReadKeyFile = %d bytes (cap %d), %v; want the 132-byte payload", len(read), cap(read), err)
 	}
-	if len(library.openFilePaths) != 1 || library.openFilePaths[0] != `C:\keys\v1.bin` {
+	if len(library.openFilePaths) != 1 || library.openFilePaths[0] != path {
 		t.Errorf("the library was asked for %v", library.openFilePaths)
 	}
 	if library.openFileCaps[0] != hkdfguard.MaxWrappedKeyBytes {
