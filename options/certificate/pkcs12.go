@@ -90,8 +90,13 @@ type pkcs12Contents struct {
 // MAC doesn't verify fails with ErrWrongPassword.
 func decodePKCS12(data, password []byte) (*pkcs12Contents, error) {
 	var pfx pfxPDU
-	if err := unmarshalBER(data, &pfx); err != nil {
+	cloned, err := unmarshalBERCloned(data, &pfx)
+	if err != nil {
 		return nil, fmt.Errorf("%w: not a PKCS#12 file: %v", ErrInvalidFile, err)
+	}
+	if cloned {
+		// A copy of the contents, unencrypted key bags and all; otherwise it is data's own bytes.
+		defer hkdfguard.Wipe(pfx.AuthSafe.Content.FullBytes)
 	}
 	if pfx.Version != 3 {
 		return nil, fmt.Errorf("%w: PKCS#12 version %d", ErrUnsupported, pfx.Version)
@@ -100,7 +105,9 @@ func decodePKCS12(data, password []byte) (*pkcs12Contents, error) {
 		return nil, fmt.Errorf("%w: a PKCS#12 file signed with a public key (%v)", ErrUnsupported, pfx.AuthSafe.ContentType)
 	}
 	var authSafe []byte
-	if err := unmarshalBER(pfx.AuthSafe.Content.Bytes, &authSafe); err != nil {
+	err = unmarshalBER(pfx.AuthSafe.Content.Bytes, &authSafe)
+	defer hkdfguard.Wipe(authSafe)
+	if err != nil {
 		return nil, fmt.Errorf("%w: the PKCS#12 contents: %v", ErrInvalidFile, err)
 	}
 
@@ -166,8 +173,18 @@ func verifyMAC(mac macData, authSafe []byte, candidates [][]byte, budget *iterat
 // readAuthenticatedSafe reads every content of the file's authenticated safe.
 func readAuthenticatedSafe(authSafe, password []byte, budget *iterationBudget) (*pkcs12Contents, error) {
 	var infos []contentInfo
-	if err := unmarshalBER(authSafe, &infos); err != nil {
+	cloned, err := unmarshalBERCloned(authSafe, &infos)
+	if err != nil {
 		return nil, fmt.Errorf("%w: the PKCS#12 authenticated safe: %v", ErrInvalidFile, err)
+	}
+	if cloned {
+		// Copies of the contents. Uncloned, they are authSafe's own bytes, which the next password
+		// tried reads again, and which decodePKCS12 wipes.
+		defer func() {
+			for _, info := range infos {
+				hkdfguard.Wipe(info.Content.FullBytes)
+			}
+		}()
 	}
 	contents := &pkcs12Contents{}
 	fail := func(err error) (*pkcs12Contents, error) {
@@ -178,10 +195,14 @@ func readAuthenticatedSafe(authSafe, password []byte, budget *iterationBudget) (
 		var safe []byte
 		switch {
 		case info.ContentType.Equal(oidData):
+			// safe is a copy, holding any unencrypted key bag: it is wiped once read.
 			if err := unmarshalBER(info.Content.Bytes, &safe); err != nil {
+				hkdfguard.Wipe(safe)
 				return fail(fmt.Errorf("%w: PKCS#12 data: %v", ErrInvalidFile, err))
 			}
-			if err := contents.readSafeContents(safe, password, budget, 0); err != nil {
+			err := contents.readSafeContents(safe, password, budget, 0)
+			hkdfguard.Wipe(safe)
+			if err != nil {
 				return fail(err)
 			}
 		case info.ContentType.Equal(oidEncryptedData):
@@ -232,8 +253,18 @@ func (c *pkcs12Contents) readSafeContents(der, password []byte, budget *iteratio
 		return fmt.Errorf("%w: PKCS#12 safe contents nested too deep", ErrInvalidFile)
 	}
 	var bags []safeBag
-	if err := unmarshalBER(der, &bags); err != nil {
+	cloned, err := unmarshalBERCloned(der, &bags)
+	if err != nil {
 		return fmt.Errorf("%w: PKCS#12 safe contents: %v", ErrInvalidFile, err)
+	}
+	if cloned {
+		// Copies of the bags, an unencrypted key bag's key among them. Uncloned, they are der's own
+		// bytes, which its caller wipes.
+		defer func() {
+			for _, bag := range bags {
+				hkdfguard.Wipe(bag.Value.FullBytes)
+			}
+		}()
 	}
 	for _, bag := range bags {
 		switch {
@@ -303,24 +334,31 @@ func decryptPKCS8(der, password []byte, budget *iterationBudget) (crypto.Signer,
 }
 
 // unmarshalBER parses der into out as encoding/asn1 does, and, if that fails, parses its BER
-// converted to DER: a file from a tool that writes BER. The converted copy is wiped; the
-// conversion's intermediate copies can't be, which matters only for decrypted contents written as
-// BER.
+// converted to DER: a file from a tool that writes BER. The converted copy is wiped, as berToDER
+// wipes every intermediate copy it makes; what out points into is cloned first.
 func unmarshalBER(der []byte, out any) error {
-	err := unmarshalExact(der, out)
+	_, err := unmarshalBERCloned(der, out)
+	return err
+}
+
+// unmarshalBERCloned is unmarshalBER, reporting whether out's asn1.RawValues were cloned from a
+// conversion - copies of their own, which the caller wipes when they may hold a secret - rather
+// than pointing into der, which is wiped with der.
+func unmarshalBERCloned(der []byte, out any) (cloned bool, err error) {
+	err = unmarshalExact(der, out)
 	if err == nil {
-		return nil
+		return false, nil
 	}
 	converted, convertErr := berToDER(der)
 	if convertErr != nil {
-		return err
+		return false, err
 	}
 	defer hkdfguard.Wipe(converted)
 	if err := unmarshalExact(converted, out); err != nil {
-		return err
+		return false, err
 	}
 	cloneBytes(out)
-	return nil
+	return true, nil
 }
 
 // cloneBytes copies every []byte and asn1.RawValue an unmarshaled value points into, so it no

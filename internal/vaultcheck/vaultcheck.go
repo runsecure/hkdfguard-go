@@ -17,9 +17,13 @@ import (
 
 // Check returns why a module's New refuses the *api.Client client - whose address is address, and
 // whose configuration's HttpClient httpClient returns - and the KV engine's mountPath: the first of
-// Address, Redirects (unless allowRedirects) and MountPath to refuse; "" when none does.
+// Address, TLSVerification, Redirects (unless allowRedirects) and MountPath to refuse; "" when none
+// does.
 func Check(address string, client any, httpClient func() *http.Client, allowRedirects bool, mountPath string) string {
 	reason := Address(address)
+	if reason == "" {
+		reason = TLSVerification(httpClient())
+	}
 	if reason == "" && !allowRedirects {
 		reason = Redirects(client, httpClient)
 	}
@@ -44,6 +48,27 @@ func Address(address string) string {
 	}
 	if u.User != nil || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" {
 		return fmt.Sprintf("the Vault client's address '%s' must not hold credentials, a query or a fragment.", address)
+	}
+	return ""
+}
+
+// TLSVerification returns why a Vault client's HTTP client is refused for not verifying the server's
+// certificate: its transport's TLS configuration sets InsecureSkipVerify, as api.DefaultConfig does
+// when VAULT_SKIP_VERIFY is set, or api.Config.ConfigureTLS with Insecure. Every request carries the
+// token, and a secret or a DEK, so an https address is worth no more than http without it: anyone
+// on the path could present any certificate. It is refused even for a loopback address, where it
+// only ever reflects a configuration meant for somewhere else.
+//
+// Only a *http.Transport can be read - nil means http.DefaultTransport. A RoundTripper of another
+// type (a tracing or retrying wrapper, say) can't be seen into, and is accepted: verify that its
+// inner transport verifies.
+func TLSVerification(httpClient *http.Client) string {
+	var transport http.RoundTripper = http.DefaultTransport
+	if httpClient != nil && httpClient.Transport != nil {
+		transport = httpClient.Transport
+	}
+	if t, ok := transport.(*http.Transport); ok && t.TLSClientConfig != nil && t.TLSClientConfig.InsecureSkipVerify {
+		return "the Vault client doesn't verify the server's TLS certificate (InsecureSkipVerify, as VAULT_SKIP_VERIFY or api.Config.ConfigureTLS with Insecure sets), so anyone on the network path could receive the token and every secret or DEK. Unset VAULT_SKIP_VERIFY and give the client the CA that issued Vault's certificate (VAULT_CACERT) instead."
 	}
 	return ""
 }

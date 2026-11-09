@@ -131,12 +131,14 @@ type PipelineDataProtector interface {
 
 	// WriteDEK writes the key to destination exactly as the wrap tool's --dek-stdin reads it - its
 	// base64 form as ASCII, with no line ending - and then flushes destination if it has a
-	// Flush() error method (a *bufio.Writer, say). For the wrap tool's standard input, local or
-	// remote: the stdin of "hkdfguard wrap ... --dek-stdin", or of
-	// "ssh -T host sudo -n hkdfguard wrap ... --dek-stdin". The bytes are written from a buffer
-	// zeroed once the write and flush complete; no string is ever made of them. destination is
-	// left open: close it afterwards, so the tool sees the end of its input. ctx is checked before
-	// anything is written. Fails with ErrClosed once the protector is closed.
+	// Flush() error method. For the wrap tool's standard input, local or remote: the stdin of
+	// "hkdfguard wrap ... --dek-stdin", or of "ssh -T host sudo -n hkdfguard wrap ... --dek-stdin".
+	// The bytes are written from a buffer zeroed once the write and flush complete; no string is
+	// ever made of them. Pass the pipe itself - exec.Cmd.StdinPipe's writer, say - and never a
+	// buffering writer such as a *bufio.Writer or bytes.Buffer, which keeps a copy of the key that
+	// nothing wipes. destination is left open: close it afterwards, so the tool sees the end of its
+	// input. ctx is checked before anything is written. Fails with ErrClosed once the protector is
+	// closed.
 	WriteDEK(ctx context.Context, destination io.Writer) error
 }
 

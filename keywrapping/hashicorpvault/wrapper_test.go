@@ -992,3 +992,23 @@ func TestKeyWrapper_IsSafeForConcurrentUse(t *testing.T) {
 		}
 	}
 }
+
+func TestNew_RefusesAClientThatDoesntVerifyTLS(t *testing.T) {
+	address := newFakeTransit(t).server.URL
+	t.Run("ConfigureTLS Insecure", func(t *testing.T) {
+		client := newClientAt(t, address, func(c *api.Config) {
+			if err := c.ConfigureTLS(&api.TLSConfig{Insecure: true}); err != nil {
+				t.Fatal(err)
+			}
+		})
+		if _, err := New(client, testKeyName, Options{}); !errors.Is(err, ErrInvalidArgument) || !strings.Contains(err.Error(), "TLS certificate") {
+			t.Errorf("got %v; want ErrInvalidArgument", err)
+		}
+	})
+	t.Run("VAULT_SKIP_VERIFY", func(t *testing.T) {
+		t.Setenv("VAULT_SKIP_VERIFY", "true")
+		if _, err := New(newClientAt(t, address, nil), testKeyName, Options{AllowRedirects: true}); !errors.Is(err, ErrInvalidArgument) {
+			t.Errorf("got %v; want ErrInvalidArgument, whatever else is allowed", err)
+		}
+	})
+}

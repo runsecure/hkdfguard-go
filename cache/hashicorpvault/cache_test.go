@@ -675,3 +675,12 @@ func TestWithSensitiveLogging_AReadLogsThePathOnly_AndAFailureLogsAnError(t *tes
 		t.Fatalf("the log holds a secret: %s", text)
 	}
 }
+
+func TestAClientThatDoesntVerifyTLS_IsRefused(t *testing.T) {
+	vault := newFakeVault(t)
+	t.Setenv("VAULT_SKIP_VERIFY", "true")
+	_, err := New(newClient(t, vault.server.URL), newTestRing(t), Options{AllowRedirects: true})
+	if !errors.Is(err, ErrInvalidArgument) || !strings.Contains(err.Error(), "TLS certificate") {
+		t.Fatalf("got %v", err)
+	}
+}

@@ -3,6 +3,7 @@ package configurationresolver
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"slices"
 	"testing"
@@ -320,6 +321,62 @@ func TestToken_NullOrEmptySequence_Fails(t *testing.T) {
 	for _, tc := range tests {
 		if token, err := NewConfigurationItemToken(tc.start, tc.end, ""); err == nil || token != nil {
 			t.Errorf("NewConfigurationItemToken(%q, %q) = %v, %v; want an error", tc.start, tc.end, token, err)
+		}
+	}
+}
+
+// recordingReader hands out data a chunk at a time, keeping every buffer it was given to read into.
+type recordingReader struct {
+	data   []byte
+	chunk  int
+	given  [][]byte
+	failAt error
+}
+
+func (r *recordingReader) Read(p []byte) (int, error) {
+	r.given = append(r.given, p)
+	if len(r.data) == 0 {
+		if r.failAt != nil {
+			return 0, r.failAt
+		}
+		return 0, io.EOF
+	}
+	n := copy(p[:min(len(p), r.chunk)], r.data)
+	r.data = r.data[n:]
+	return n, nil
+}
+
+// end is the last byte of the array p is a window onto, which identifies the array.
+func end(p []byte) *byte {
+	full := p[:cap(p)]
+	return &full[len(full)-1]
+}
+
+// Growing the buffer leaves no copy of the text behind: each array outgrown is zeroed, and only the
+// one returned - which ReadKeysFrom wipes - holds it.
+func TestReadAllWiping_ZeroesEveryOutgrownBuffer(t *testing.T) {
+	text := bytes.Repeat([]byte("${secret-name}"), 1000) // 14,000 bytes: grown 4 KiB, 8 KiB, 16 KiB
+	for _, failure := range []error{nil, errors.New("the stream broke")} {
+		r := &recordingReader{data: text, chunk: 1000, failAt: failure}
+		got, err := readAllWiping(r)
+		if err != failure {
+			t.Fatalf("err = %v, want %v", err, failure)
+		}
+		if !bytes.Equal(got, text) {
+			t.Fatalf("read %d bytes, not the text", len(got))
+		}
+		outgrown := 0
+		for _, p := range r.given {
+			if end(p) == end(got) {
+				continue
+			}
+			outgrown++
+			if full := p[:cap(p)]; !bytes.Equal(full, make([]byte, len(full))) {
+				t.Fatal("an outgrown buffer still holds text")
+			}
+		}
+		if outgrown == 0 {
+			t.Fatal("the buffer never grew")
 		}
 	}
 }

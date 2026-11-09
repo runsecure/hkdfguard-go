@@ -75,14 +75,37 @@ func (r *ConfigurationItemReader) ReadKeysFrom(source io.Reader) ([]string, erro
 	if source == nil {
 		return nil, errors.New("configurationresolver: a reader to read from is required")
 	}
-	data, err := io.ReadAll(source)
-	defer hkdfguard.Wipe(data)
+	data, err := readAllWiping(source)
+	defer hkdfguard.Wipe(data[:cap(data)])
 	if err != nil {
 		return nil, err
 	}
 	text := decodeText(data)
 	defer hkdfguard.Wipe(text)
 	return r.ReadKeys(text), nil
+}
+
+// readAllWiping reads source to its end into a buffer of its own, grown by copying and zeroing
+// the smaller one - never through io.ReadAll or a bytes.Buffer, whose discarded arrays would keep
+// the text, secrets and all. The caller wipes the result to its capacity, even on failure.
+func readAllWiping(source io.Reader) ([]byte, error) {
+	buffer := make([]byte, 0, 4096)
+	for {
+		read, err := source.Read(buffer[len(buffer):cap(buffer)])
+		buffer = buffer[:len(buffer)+read]
+		if err == io.EOF {
+			return buffer, nil
+		}
+		if err != nil {
+			return buffer, err
+		}
+		if len(buffer) == cap(buffer) {
+			larger := make([]byte, len(buffer), 2*cap(buffer))
+			copy(larger, buffer)
+			hkdfguard.Wipe(buffer)
+			buffer = larger
+		}
+	}
 }
 
 func (r *ConfigurationItemReader) store(keys []string) []string {

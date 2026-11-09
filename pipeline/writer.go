@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"io"
 	"maps"
-	"os"
 	"path/filepath"
 	"runtime"
 	"slices"
@@ -122,7 +121,7 @@ func New(protector hkdfguard.PipelineDataProtector, secretNames []string, store 
 		}
 		fileName := FileName(secretName)
 		if !filepersecret.IsValidName(fileName) {
-			return nil, invalidArgument("'%s' can't be written as a file: its file name '%s' must be 1-%d ASCII letters, digits, '-', '_' and '.', not starting with '.'",
+			return nil, invalidArgument("'%s' can't be written as a file: its file name '%s' must be 1-%d ASCII letters, digits, '-', '_' and '.', neither starting nor ending with '.', and not a name Windows reserves for a device (CON, PRN, AUX, NUL, COM0-9, LPT0-9)",
 				secretName, fileName, filepersecret.MaxNameLength)
 		}
 		// File names are found ignoring case on Windows and macOS, so two differing only in case are one.
@@ -199,10 +198,17 @@ func (w *Writer) PullSecrets(ctx context.Context) error {
 // named for it, holding its encrypted, formatted value as UTF-8, without a byte order mark. A file
 // already there by that name is replaced; any other file is left as it is.
 //
+// Every file is written inside the folder through an os.Root, so a symbolic link, junction or mount
+// point planted in the folder can't redirect a write outside it, and atomically: to a temporary
+// file beside it, flushed, then renamed over the name, which replaces a planted link rather than
+// writing through it, and leaves the previous file whole if the process stops part-way. The folder
+// path itself is followed as given.
+//
 // Only encrypted values are written, but cache/filepersecret refuses a folder or file anyone but
 // administrators and the principals it trusts can modify: write them where the deployment can set
 // that, or set it once they're written. A folder made here is given mode 0755 and a file 0644, less
-// the umask; a file that already exists keeps its own.
+// the umask. A replaced file is a new file: it keeps the old one's permission bits, but not its
+// owner or any ACL set on it, and inherits the folder's ACL where the platform has them.
 //
 // It fails with ErrInvalidArgument when folderPath is empty, and with ErrNotPulled when no pull has
 // completed; and as the filesystem does.
@@ -217,11 +223,13 @@ func (w *Writer) WriteProtectedSecretFiles(folderPath string) error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(folder, folderMode); err != nil {
+	root, err := openFolderRoot(folder)
+	if err != nil {
 		return err
 	}
+	defer root.Close()
 	for _, fileName := range slices.Sorted(maps.Keys(w.protected)) {
-		if err := os.WriteFile(filepath.Join(folder, fileName), []byte(w.protected[fileName]), fileMode); err != nil {
+		if err := writeInRoot(root, fileName, []byte(w.protected[fileName])); err != nil {
 			return err
 		}
 	}
@@ -240,8 +248,11 @@ func (w *Writer) WriteProtectedSecretFiles(folderPath string) error {
 // "\r\n" on Windows and "\n" elsewhere. Nothing is escaped that needn't be: '+', '<', '>' and '&'
 // are written as they are.
 //
-// A folder made here is given mode 0755 and the file 0644, less the umask; a file that already
-// exists keeps its own. It fails with ErrInvalidArgument when filePath is empty, and with
+// The file is written as WriteProtectedSecretFiles writes each of its files: through an os.Root
+// opened on its folder, atomically, by renaming a temporary file over it. A folder made here is
+// given mode 0755 and the file 0644, less the umask. A replaced file is a new file: it keeps the old
+// one's permission bits, but not its owner or any ACL set on it. It fails with ErrInvalidArgument
+// when filePath is empty, and with
 // ErrNotPulled when no pull has completed; and as the filesystem does.
 func (w *Writer) WriteJSONSecrets(filePath string) error {
 	if filePath == "" {
@@ -254,10 +265,12 @@ func (w *Writer) WriteJSONSecrets(filePath string) error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(path), folderMode); err != nil {
+	root, err := openFolderRoot(filepath.Dir(path))
+	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, w.jsonSecrets(), fileMode)
+	defer root.Close()
+	return writeInRoot(root, filepath.Base(path), w.jsonSecrets())
 }
 
 // WriteJSONSecretsTo writes every secret in ProtectedSecrets to destination as the JSON object

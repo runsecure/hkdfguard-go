@@ -12,6 +12,7 @@ import (
 	"github.com/runsecure/hkdfguard-go"
 	"github.com/runsecure/hkdfguard-go/internal/kmswrap"
 	"github.com/runsecure/hkdfguard-go/internal/secretjson"
+	"github.com/runsecure/hkdfguard-go/internal/vaultcheck"
 	"github.com/runsecure/hkdfguard-go/securefile"
 )
 
@@ -175,6 +176,9 @@ func New(client *api.Client, keyName string, options Options) (*KeyWrapper, erro
 	}
 	if err := checkAddress(client.Address()); err != nil {
 		return nil, err
+	}
+	if reason := vaultcheck.TLSVerification(client.CloneConfig().HttpClient); reason != "" {
+		return nil, invalidArgument("%s", strings.ToUpper(reason[:1])+reason[1:])
 	}
 	if !options.AllowRedirects && followsRedirects(client) {
 		return nil, invalidArgument("The Vault client's HTTP client follows redirects, which would send the Vault token wherever they point. " +

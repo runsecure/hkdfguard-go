@@ -86,7 +86,9 @@ func (p *PipelineDataProtector) KeyBase64() []byte {
 // base64 form as ASCII (44 bytes), with no line ending - and then flushes destination if it has a
 // Flush() error method. The base64 is encoded straight from the key into a buffer of its own,
 // never through a string or the buffer KeyBase64 returns, and zeroed once the write and flush
-// complete. destination is left open: close it afterwards, so the tool sees the end of its input.
+// complete. Pass the pipe itself, never a buffering writer such as a *bufio.Writer or
+// bytes.Buffer: its copy of the key is out of reach, and nothing wipes it. destination is left
+// open: close it afterwards, so the tool sees the end of its input.
 //
 // It fails when destination is nil, with ctx's error when ctx has ended (nothing is written), with
 // hkdfguard.ErrClosed after Close, and with the error the write or flush returns.
@@ -128,7 +130,7 @@ func (p *PipelineDataProtector) Encrypt(ctx context.Context, plaintext []byte, s
 
 	formatted, err := p.encrypt(ctx, plaintext, secretIdentifier)
 	if err != nil {
-		diagnostics.RecordError(span, err)
+		diagnostics.RecordError(span, telemetry.LoggedError(err, secretIdentifier))
 	}
 	return formatted, err
 }
@@ -168,7 +170,7 @@ func (p *PipelineDataProtector) Decrypt(ctx context.Context, encrypted, secretId
 
 	n, err := p.decrypt(ctx, encrypted, secretIdentifier, result)
 	if err != nil {
-		diagnostics.RecordError(span, err)
+		diagnostics.RecordError(span, telemetry.LoggedError(err, secretIdentifier))
 	}
 	return n, err
 }

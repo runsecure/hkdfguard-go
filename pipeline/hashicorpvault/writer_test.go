@@ -354,3 +354,16 @@ func TestNew_ChecksTheClientAndOptions(t *testing.T) {
 		}
 	}
 }
+
+func TestAClientThatDoesntVerifyTLS_IsRefused(t *testing.T) {
+	vault := newFakeVault(t)
+	client := newClient(t, vault.server.URL, func(c *api.Config) {
+		if err := c.ConfigureTLS(&api.TLSConfig{Insecure: true}); err != nil {
+			t.Fatal(err)
+		}
+	})
+	_, err := New(client, pipelinetest.NewProtector(t), []string{"item"}, Options{AllowRedirects: true})
+	if !errors.Is(err, ErrInvalidArgument) || !strings.Contains(err.Error(), "TLS certificate") {
+		t.Fatalf("got %v", err)
+	}
+}

@@ -483,6 +483,8 @@ stdin: `WriteProtectedSecretFilesTo` as a PAX tar archive of the files (for
 `ssh -T host sudo -n tee /etc/app/secrets.json`). No key ring is involved: once the files are
 written, the protector's key goes to the native platform's wrap process - `WriteDEK` writes it to the
 wrap tool's stdin (`--dek-stdin`) from a buffer zeroed afterwards, or `KeyBase64` hands it over.
+Give `WriteDEK` the pipe itself, not a `*bufio.Writer` or other buffering writer, whose copy of the
+key nothing wipes.
 
 ```go
 protector, err := aesgcm256.NewPipelineDataProtector(dek.NewDefaultFormatProvider(), 3)
@@ -661,7 +663,10 @@ limit, read at most one byte past whatever the file reports: the port of the .NE
 - **Linux and Apple silicon macOS:** it and every directory above it must be owned by root or a
   trusted user and writable by nobody else (by its group only if that group is trusted); only
   symbolic links a trusted user owns are followed, and the resolved path is opened with
-  `O_NOFOLLOW` and must still be a regular file.
+  `O_NOFOLLOW` and must still be a regular file. ACL write grants count too: on Linux every named
+  user and group a group-writable item's POSIX access ACL lets write must be trusted; on macOS
+  every user and group an allow entry of any item's extended ACL (`chmod +a`) lets write, delete,
+  rewrite the ACL or take ownership must be, so `everyone allow write` is refused.
 - **Everywhere, for a key file:** 1 to `hkdfguard.MaxWrappedKeyBytes` bytes, and not what looks
   like an unwrapped key (32 raw bytes, optionally followed by one line ending (LF or CRLF), or its
   hex or base64). A trusted file is held only to its caller's limit, and may be empty.
@@ -716,7 +721,7 @@ by themselves (through the library's `hkdfguard_kek_exists` export, and the prov
 tests. On Windows the key-file tests (`keyfile_windows_test.go`) also run against the installed
 library: its refusals need no KEK, and reading back a real key file uses the test service. To provision a test host, run from `keywrapping/nativev1`:
 
-- Linux: `sudo scripts/provision-linux-test-key.sh` (the TPM-backed test KEK and policy; `--remove` undoes it)
+- Linux: `sudo scripts/provision-linux-test-key.sh` (the TPM-backed test KEK and policy; `--remove` undoes it). The derivation secret is made readable by the test account's primary group, which must be that account's alone; `--group NAME` names another group only it is in
 - macOS: `scripts/provision-macos-test-key.sh` as the account that runs the tests (`--remove` retires the KEK)
 - Windows: `./scripts/provision-windows-test-key.ps1` from an elevated PowerShell (`-Remove` retires
   the KEK; a provisioning run also retires the legacy `com.hkdfguard.native.windows.test`, after

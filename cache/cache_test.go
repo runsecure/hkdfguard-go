@@ -59,6 +59,26 @@ func TestAdd_ADuplicateName_InAnyASCIICase_IsRefused_AndKeepsTheFirstValue(t *te
 	}
 }
 
+func TestAdd_ADuplicate_NeverEncrypts_AndItsErrorDoesNotNameIt(t *testing.T) {
+	ring, keys := newRing(t, 1)
+	logger, logs := newLogger() // sensitive logging off: the name must appear nowhere
+	c := New(ring, WithLogger(logger))
+	mustAdd(t, c, "tenant-42/db-password", "first")
+
+	err := c.Add(bg, "TENANT-42/DB-PASSWORD", []byte("second"))
+	if !errors.Is(err, hkdfguard.ErrAlreadyExists) {
+		t.Fatalf("got %v", err)
+	}
+	if n := len(keys[1].encryptAADs); n != 1 {
+		t.Errorf("encrypted %d times; a duplicate must not encrypt", n)
+	}
+	for _, text := range append([]string{err.Error()}, attrText(logs.withEventID(2)[0], "error")) {
+		if strings.Contains(strings.ToLower(text), "tenant-42") {
+			t.Errorf("the name is in %q", text)
+		}
+	}
+}
+
 func TestAddOrUpdate_ReplacesAnyValue(t *testing.T) {
 	c := newCache(t)
 	mustAdd(t, c, "item", "first")
@@ -308,8 +328,9 @@ func TestTheLogger_RecordsSensitiveOperations_AndEveryFailure(t *testing.T) {
 	_ = c.Add(bg, "item", []byte("duplicate"))
 	_ = c.AddOrUpdate(bg, "empty", nil)
 
-	if len(logs.withEventID(1)) != 3 {
-		t.Errorf("%d sensitive operations logged", len(logs.withEventID(1)))
+	// Only the Add that completed is logged as completed, and only once it has.
+	if completed := logs.withEventID(1); len(completed) != 1 || !strings.Contains(completed[0].Message, "hkdfguard.cache.add completed for item.") {
+		t.Errorf("%d sensitive operations logged: %v", len(completed), messages(completed))
 	}
 	if failures := logs.withEventID(2); len(failures) != 2 || !strings.Contains(failures[0].Message, "hkdfguard.cache.add failed.") {
 		t.Errorf("%d failures logged", len(failures))
@@ -319,16 +340,54 @@ func TestTheLogger_RecordsSensitiveOperations_AndEveryFailure(t *testing.T) {
 	}
 }
 
+func TestTheLogger_RecordsAStoredValueThatFailsToDecrypt_ButNotAMiss(t *testing.T) {
+	logger, logs := newLogger()
+	ring, _ := newRing(t, 1, 2)
+	c := New(ring, WithLogger(logger))
+	mustAdd(t, c, "admin", "admin-secret")
+	mustAdd(t, c, "reporting", "reporting-secret")
+
+	if _, err := c.Decrypt(bg, "missing", make([]byte, 8)); err != nil {
+		t.Fatal(err)
+	}
+	if len(logs.withEventID(2)) != 0 {
+		t.Errorf("a miss was logged as a failure: %v", messages(logs.withEventID(2)))
+	}
+
+	// A ciphertext moved under another name, and an entry whose key version the ring lacks.
+	adminEntry, _ := c.store.entries.Load(matchKey("admin"))
+	c.store.entries.Store(matchKey("reporting"), adminEntry)
+	_, moved := c.Decrypt(bg, "reporting", make([]byte, 64))
+	swapped := *adminEntry.(*hkdfguard.KeyTrackingValue)
+	swapped.KeyVersion = 9
+	c.store.entries.Store(matchKey("admin"), &swapped)
+	_, retired := c.Decrypt(bg, "admin", make([]byte, 64))
+
+	failures := logs.withEventID(2)
+	if len(failures) != 2 {
+		t.Fatalf("%d failures logged: %v", len(failures), messages(failures))
+	}
+	for i, want := range []error{moved, retired} {
+		if !strings.Contains(failures[i].Message, "hkdfguard.cache.decrypt failed.") || !strings.Contains(attrText(failures[i], "error"), want.Error()) {
+			t.Errorf("failure %d: %q, error %q; want %v", i, failures[i].Message, attrText(failures[i], "error"), want)
+		}
+	}
+}
+
 func TestOperations_AreCountedBySuccessAndFailure(t *testing.T) {
 	reader := sdkmetric.NewManualReader()
 	provider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
 	otel.SetMeterProvider(provider)
 	t.Cleanup(func() { _ = provider.Shutdown(context.Background()) })
 
-	c := newCache(t)
+	ring, _ := newRing(t, 1)
+	c := New(ring)
 	mustAdd(t, c, "item", "value")
 	_ = c.Add(bg, "item", []byte("duplicate"))
 	_ = c.AddOrUpdate(bg, "item", []byte("update"))
+	get(t, c, "item")
+	_, _ = c.Decrypt(bg, "missing", make([]byte, 8))
+	_, _ = c.Decrypt(bg, "item", make([]byte, 1)) // too small
 
 	var collected metricdata.ResourceMetrics
 	_ = reader.Collect(context.Background(), &collected)
@@ -343,7 +402,10 @@ func TestOperations_AreCountedBySuccessAndFailure(t *testing.T) {
 		}
 	}
 
-	want := map[string]int64{"hkdfguard.cache.add/success": 1, "hkdfguard.cache.add/error": 1, "hkdfguard.cache.add_or_update/success": 1}
+	want := map[string]int64{
+		"hkdfguard.cache.add/success": 1, "hkdfguard.cache.add/error": 1, "hkdfguard.cache.add_or_update/success": 1,
+		"hkdfguard.cache.decrypt/success": 1, "hkdfguard.cache.decrypt/not_found": 1, "hkdfguard.cache.decrypt/error": 1,
+	}
 	for k, v := range want {
 		if counts[k] != v {
 			t.Errorf("%s = %d, want %d (all: %v)", k, counts[k], v, counts)

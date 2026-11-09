@@ -283,3 +283,23 @@ func TestOptionsFromJSON_ReportsAMissingSectionOrBadJSON(t *testing.T) {
 		t.Errorf("whole document: %+v, %v", whole, err)
 	}
 }
+
+// Two sections whose names differ only in case can't both be the one meant: rather than pick one -
+// whichever map iteration reaches first - the document is refused.
+func TestOptionsFromJSON_RefusesSectionsDifferingOnlyInCase(t *testing.T) {
+	for _, c := range []struct{ document, section string }{
+		{`{"HkdfGuard":{"ServiceName":"a"},"hkdfguard":{"ServiceName":"b"}}`, "HkdfGuard"},
+		{`{"Security":{"HkdfGuard":{}},"SECURITY":{"HkdfGuard":{}}}`, "Security:HkdfGuard"},
+		{`{"Security":{"HkdfGuard":{},"HKDFGUARD":{}}}`, "security:hkdfguard"},
+	} {
+		_, err := OptionsFromJSON([]byte(c.document), c.section)
+		if err == nil || !strings.Contains(err.Error(), "ambiguous") {
+			t.Errorf("%s in %s: got %v; want it refused as ambiguous", c.section, c.document, err)
+		}
+	}
+	// One match, in any case, still reads.
+	options, err := OptionsFromJSON([]byte(`{"Other":{},"hkdfGUARD":{"ServiceName":"svc"}}`), "HkdfGuard")
+	if err != nil || options.ServiceName != "svc" {
+		t.Errorf("%+v, %v", options, err)
+	}
+}

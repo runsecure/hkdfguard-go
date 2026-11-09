@@ -10,7 +10,11 @@
 #      account can open the TPM (it must be in the tss group);
 #   2. creates /etc/hkdfguard/tpm.derivation-secret (32 random bytes, root:<test user's group>,
 #      0440) if there isn't one - an existing secret is never replaced, because that would change
-#      every TPM KEK on this host;
+#      every TPM KEK on this host. The group - the test account's primary group, or the one
+#      --group names - must be the test account's alone (a user private group, as Debian and
+#      Ubuntu give every account): one another account is in would let that account read the
+#      secret, so the script refuses it, and refuses an existing group-readable secret whose group
+#      is shared;
 #   3. writes /etc/hkdfguard/policy.toml requiring the TPM, the derivation secret, and a pinned
 #      TPM Name for the test service (the provisioning allowlist), learning the Name from the
 #      TPM itself through hkdfguard, run as the test user;
@@ -35,8 +39,9 @@
 # native tests.
 #
 # Usage (from keywrapping/nativev1):
-#   sudo scripts/provision-linux-test-key.sh            # provision
-#   sudo scripts/provision-linux-test-key.sh --remove   # remove the policy this script wrote
+#   sudo scripts/provision-linux-test-key.sh                # provision
+#   sudo scripts/provision-linux-test-key.sh --group NAME   # provision, the secret readable by NAME
+#   sudo scripts/provision-linux-test-key.sh --remove       # remove the policy this script wrote
 #
 # --remove leaves the derivation secret in place and says how to delete it: deleting it makes
 # every DEK wrapped on this host's TPM unrecoverable.
@@ -66,12 +71,18 @@ note() { echo "==> $*"; }
 [[ ${EUID} -eq 0 ]] || die "run this with sudo, from the account that runs the tests: sudo $0 $*"
 
 remove=false
+secret_group=""
 case "${1-}" in
     "") ;;
     --remove) remove=true ;;
+    --group)
+        [[ -n ${2-} ]] || die "--group needs a group name"
+        secret_group=$2
+        shift ;;
     -h|--help) sed -n '2,/^set -euo/p' "$0" | sed '$d; s/^# \{0,1\}//'; exit 0 ;;
-    *) die "unknown argument '$1' (expected --remove or nothing)" ;;
+    *) die "unknown argument '$1' (expected --remove, --group NAME or nothing)" ;;
 esac
+[[ $# -le 1 ]] || die "unexpected argument '$2'"
 
 policy_is_ours() {
     [[ -f ${POLICY} ]] || return 1
@@ -102,7 +113,9 @@ fi
 # ordinary account can reach the TPM and read the secret.
 TEST_USER="${SUDO_USER-}"
 [[ -n ${TEST_USER} && ${TEST_USER} != root ]] || die "run this through sudo from the (non-root) account that runs the tests"
-TEST_GROUP="$(id -gn -- "${TEST_USER}")"
+TEST_GROUP="${secret_group:-$(id -gn -- "${TEST_USER}")}"
+id -nG -- "${TEST_USER}" | tr ' ' '\n' | grep -qx -- "${TEST_GROUP}" \
+    || die "${TEST_USER} is not in the group ${TEST_GROUP}, so it couldn't read a secret only that group may"
 
 # --- Preflight ---------------------------------------------------------------------------------
 
@@ -125,14 +138,40 @@ fi
 
 # --- Derivation secret -------------------------------------------------------------------------
 
+# group_sharers prints every account other than $2 that is in group $1 - listed as a member, or
+# with it as its primary group - one per line; nothing when the group is $2's alone. Accounts a
+# directory service (LDAP, SSSD) won't enumerate can't be seen, so on such a host use a group that
+# exists only locally.
+group_sharers() {
+    local group=$1 user=$2 gid members
+    gid="$(getent group -- "${group}" | cut -d: -f3)"
+    [[ -n ${gid} ]] || die "the group ${group} doesn't exist"
+    members="$(getent group -- "${group}" | cut -d: -f4)"
+    {
+        tr ',' '\n' <<<"${members}"
+        getent passwd | awk -F: -v gid="${gid}" '$4 == gid { print $1 }'
+    } | grep -v -x -e '' -e "${user}" | sort -u || true
+}
+
+# require_private_group dies unless group $1 is $2's alone, so a secret it may read is $2's alone.
+require_private_group() {
+    local group=$1 user=$2 what=$3 sharers
+    sharers="$(group_sharers "${group}" "${user}")"
+    [[ -z ${sharers} ]] || die "${what} ${group}, which ${user} shares with: $(paste -sd ' ' <<<"${sharers}"). They could read the derivation secret. Give ${user} a group of its own - sudo groupadd hkdfguard-tests && sudo usermod -aG hkdfguard-tests ${user}, then sign out and in - and rerun with --group hkdfguard-tests (for an existing secret, also sudo chgrp hkdfguard-tests ${SECRET})"
+}
+
 install -d -m 0755 -o root -g root "${ETC_DIR}"
 
 if [[ -e ${SECRET} ]]; then
     read -r owner mode < <(stat -c '%U %a' -- "${SECRET}")
     [[ ${owner} == root && ${mode} =~ ^[46][04]0$ && ! -L ${SECRET} ]] \
         || die "${SECRET} exists but is not root-owned with mode 0400/0440/0600/0640 (it is ${owner} ${mode}); fix it by hand - replacing it would change every TPM KEK"
+    if [[ ${mode} =~ ^[46]40$ ]]; then
+        require_private_group "$(stat -c '%G' -- "${SECRET}")" "${TEST_USER}" "${SECRET} is readable by its group"
+    fi
     note "keeping the existing ${SECRET}"
 else
+    require_private_group "${TEST_GROUP}" "${TEST_USER}" "the new secret would be readable by its group"
     tmp="$(mktemp "${ETC_DIR}/.tpm.derivation-secret.XXXXXX")"
     head -c 32 /dev/urandom > "${tmp}"
     chown "root:${TEST_GROUP}" "${tmp}"

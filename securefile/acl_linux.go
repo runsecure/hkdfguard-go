@@ -11,6 +11,10 @@ import (
 // posixACLAccessAttribute is the extended attribute holding a file's POSIX access ACL.
 const posixACLAccessAttribute = "system.posix_acl_access"
 
+// aclReadWhateverTheMode is false on Linux: the access ACL is read only when the group-write bit
+// is set, because with an ACL that bit is its mask, which caps every named entry.
+const aclReadWhateverTheMode = false
+
 // accessACLWriters is the named users and groups path's POSIX access ACL lets write it, read
 // without following a symbolic link; none when it has no ACL, or its filesystem has none.
 func accessACLWriters(path string) ([]aclWriter, error) {

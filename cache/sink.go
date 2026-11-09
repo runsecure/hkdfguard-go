@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 
 	"github.com/runsecure/hkdfguard-go"
+	"github.com/runsecure/hkdfguard-go/diagnostics"
 )
 
 // ErrSinkRefused reports a value a SecretSink won't take: one already set for the same secret or
@@ -16,13 +18,18 @@ var ErrSinkRefused = errors.New("cache: secret value refused")
 // own name within the secret being fetched - nothing else can be stored through it, and it refuses
 // every call once that fetch has returned. Set the secret's whole value at most once, and each key
 // at most once; an empty value counts as none. Every method zeroes the plaintext it is given,
-// whether or not it succeeds. Use it only from the goroutine Fetch runs on.
+// whether or not it succeeds. Safe for concurrent use: a value handed over from another goroutine
+// is either stored before Fetch's return is acted on, or refused.
 type SecretSink struct {
 	ctx         context.Context
 	store       *store
 	secretEntry string
-	values      map[string]*hkdfguard.KeyTrackingValue
-	closed      bool
+
+	// mu guards values and closed. set holds it while it encrypts, so close waits for a value
+	// being stored, and nothing is added to values once close has returned.
+	mu     sync.Mutex
+	values map[string]*hkdfguard.KeyTrackingValue
+	closed bool
 }
 
 // SetBytes encrypts plaintext as the secret's whole value, and zeroes it. It fails with
@@ -32,10 +39,16 @@ func (s *SecretSink) SetBytes(plaintext []byte) error { return s.set(s.secretEnt
 // SetKeyBytes encrypts plaintext as the value of one key the secret holds - looked up as
 // "name#key" - and zeroes it. It fails with ErrInvalidKey when key isn't one a name can hold (see
 // IsValidKey), and with ErrSinkRefused when that key was already set or the fetch has returned.
+// The ErrInvalidKey error names the key only while diagnostics.Cache's sensitive logging is on: a
+// key comes from the secret's own content.
 func (s *SecretSink) SetKeyBytes(key string, plaintext []byte) error {
 	if !IsValidKey(key) {
 		hkdfguard.Wipe(plaintext)
-		return fmt.Errorf("%w: '%s' isn't a key: 1-%d printable ASCII characters other than space, '!' and '#'", ErrInvalidKey, key, MaxKeyLength)
+		named := diagnostics.RedactedName
+		if diagnostics.Cache.SensitiveLoggingEnabled() {
+			named = "'" + key + "'"
+		}
+		return fmt.Errorf("%w: %s isn't a key: 1-%d printable ASCII characters other than space, '!' and '#'", ErrInvalidKey, named, MaxKeyLength)
 	}
 	return s.set(s.secretEntry+string(KeySeparator)+escapeCase(key), plaintext)
 }
@@ -57,10 +70,17 @@ func (s *SecretSink) SetBytesWithJSONKeys(plaintext []byte) error {
 	return s.SetBytes(plaintext)
 }
 
-func (s *SecretSink) close() { s.closed = true }
+// close refuses every later call, once any value being stored has been.
+func (s *SecretSink) close() {
+	s.mu.Lock()
+	s.closed = true
+	s.mu.Unlock()
+}
 
 func (s *SecretSink) set(entry string, plaintext []byte) error {
 	defer hkdfguard.Wipe(plaintext)
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if s.closed {
 		return fmt.Errorf("%w: the fetch this value belongs to has already returned", ErrSinkRefused)
 	}

@@ -84,9 +84,28 @@ func TestWindowsTrustedPrincipals_AddTheListedDeployers(t *testing.T) {
 }
 
 func TestWindowsTrustedPrincipals_RefuseGroupsEveryoneIsIn(t *testing.T) {
-	for _, sid := range []string{"S-1-1-0", "S-1-5-11", "S-1-5-32-545", "S-1-5-4", "S-1-5-7"} {
+	broad := append(slices.Clone(neverTrusted),
+		"S-1-5-21-1004336348-1177238915-682003330-513", // a domain's Domain Users
+		"S-1-5-21-1004336348-1177238915-682003330-514", // Domain Guests
+		"S-1-5-21-1004336348-1177238915-682003330-515", // Domain Computers
+	)
+	for _, sid := range broad {
 		_, err := trustedPrincipals(NewKeyFileTrust(KeyFileTrustOptions{WindowsPrincipals: []string{sid}}), testCanonicalSID, testAccountName)
 		requireErrorContaining(t, err, ErrInvalidTrust, "every account")
+	}
+}
+
+// A domain's own groups and accounts are trusted when listed; only its every-account groups aren't.
+func TestWindowsTrustedPrincipals_AcceptOtherDomainGroups(t *testing.T) {
+	for _, sid := range []string{
+		"S-1-5-21-1004336348-1177238915-682003330-512",  // Domain Admins
+		"S-1-5-21-1004336348-1177238915-682003330-1105", // a deployers group
+		"S-1-5-21-1004336348-1177238915-513",            // too few parts to be a domain's RID
+		"S-1-5-32-513",                                  // not under S-1-5-21
+	} {
+		if trusted, err := trustedPrincipals(NewKeyFileTrust(KeyFileTrustOptions{WindowsPrincipals: []string{sid}}), testCanonicalSID, testAccountName); err != nil || !slices.Contains(trusted, sid) {
+			t.Errorf("%s: %v, %v", sid, trusted, err)
+		}
 	}
 }
 

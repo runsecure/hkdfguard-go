@@ -31,13 +31,15 @@
 //
 // # Names, missing secrets and failures
 //
-// A name is a file name: 1-MaxNameLength ASCII letters, digits, '-', '_' and '.', not starting with
-// '.' (see IsValidName), so it can never reach outside the folder. Any other name, a missing file, a
-// missing folder and an empty file are all reported missing - Decrypt returns 0 - so the cache can
-// sit in a cache.Collection beside sources with other naming rules. A missing secret isn't
-// remembered: its file is looked for again on the next lookup. Names are matched exactly in the
-// cache, and files are found as the filesystem finds them: exactly on Linux, ignoring case on
-// Windows and, by default, macOS. A file longer than MaxFileLength bytes is refused with an error
+// A name is a file name: 1-MaxNameLength ASCII letters, digits, '-', '_' and '.', neither starting
+// nor ending with '.', and not a name Windows reserves for a device such as NUL or COM1 (see
+// IsValidName), so it can never reach outside the folder or name a file Windows would open as
+// another. Any other name, a missing file, a missing folder and an empty file are all reported
+// missing - Decrypt returns 0 - so the cache can sit in a cache.Collection beside sources with other
+// naming rules. A missing secret isn't remembered: its file is looked for again on the next lookup.
+// Names are matched exactly in the cache, and files are found as the filesystem finds them: exactly
+// on Linux, ignoring case on Windows and, by default, macOS. A file longer than MaxFileLength bytes
+// is refused with an error
 // matching securefile.ErrTooLarge, reading no more than one byte past that; a value that isn't in
 // the format provider's form fails with the provider's error (dek.ErrInvalidFormat), and one under
 // a key version the ring doesn't hold with hkdfguard.ErrKeyNotFound. Any other failure to read a

@@ -10,7 +10,9 @@
 // of a key file's rules about its contents: only a length limit the caller sets (the Go port of the
 // .NET TrustedFile). It runs on Windows, Linux and Apple silicon Macs with no native
 // HkdfGuard library installed and without cgo: on Linux and macOS the checks are lstat, readlink,
-// open with O_NOFOLLOW and fstat (golang.org/x/sys/unix); on Windows they are Win32 calls - owner
+// open with O_NOFOLLOW and fstat (golang.org/x/sys/unix), plus the POSIX access ACL (lgetxattr) on
+// Linux and the extended ACL (libSystem's acl_get_link_np, called as x/sys/unix calls libc) on
+// macOS; on Windows they are Win32 calls - owner
 // and DACL, reparse points, final path, drive type - made through golang.org/x/sys/windows.
 //
 // Whoever can replace a key file - and can also wrap under the KEK, as anyone allowed to encrypt
@@ -27,7 +29,12 @@
 //   - Linux and Apple silicon macOS: it and every directory above it must be owned by root or a
 //     trusted user and writable by nobody else (by its group only if that group is trusted), and
 //     only symbolic links a trusted user owns are followed; the resolved path is then opened with
-//     O_NOFOLLOW and must still be a regular file.
+//     O_NOFOLLOW and must still be a regular file. Write granted by an ACL counts too: on Linux,
+//     every named user and group a group-writable item's POSIX access ACL lets write must be
+//     trusted; on macOS, every user and group an allow entry of any item's extended ACL (chmod +a)
+//     lets write, delete, add or remove entries, rewrite the ACL or take ownership must be - so
+//     "everyone allow write" is refused. Deny entries, and entries only passed on to new children,
+//     are ignored; an entry that can't be read or mapped to a user or group refuses the location.
 //   - Everywhere: the contents must be 1 to hkdfguard.MaxWrappedKeyBytes bytes - never more than one
 //     byte past that is read - and must not look like an unwrapped key (32 raw bytes, optionally
 //     followed by one line ending (LF or CRLF), or a 32-byte key as hex or base64).

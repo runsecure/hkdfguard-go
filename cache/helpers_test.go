@@ -148,12 +148,27 @@ type fakeSource struct {
 	err     error
 	fetches int
 	served  [][]byte // every plaintext handed to the cache, to check it was zeroed
+
+	// block, when set, is waited on (or ctx) before each fetch answers.
+	block chan struct{}
+	// started is signalled as each fetch begins.
+	started chan string
 }
 
-func (s *fakeSource) Fetch(_ context.Context, name string) ([]byte, bool, error) {
+func (s *fakeSource) Fetch(ctx context.Context, name string) ([]byte, bool, error) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.fetches++
+	s.mu.Unlock()
+	if s.started != nil {
+		s.started <- name
+	}
+	if s.block != nil {
+		select {
+		case <-s.block:
+		case <-ctx.Done():
+			return nil, false, ctx.Err()
+		}
+	}
 	if s.err != nil {
 		return nil, false, s.err
 	}
@@ -162,8 +177,32 @@ func (s *fakeSource) Fetch(_ context.Context, name string) ([]byte, bool, error)
 		return nil, false, nil
 	}
 	plaintext := []byte(value)
+	s.mu.Lock()
 	s.served = append(s.served, plaintext)
+	s.mu.Unlock()
 	return plaintext, true, nil
+}
+
+// messages is the message of each record, for a failure report.
+func messages(records []slog.Record) []string {
+	var out []string
+	for _, r := range records {
+		out = append(out, r.Message)
+	}
+	return out
+}
+
+// attrText is the text of r's attribute key, or "" if it has none.
+func attrText(r slog.Record, key string) string {
+	var text string
+	r.Attrs(func(a slog.Attr) bool {
+		if a.Key == key {
+			text = a.Value.String()
+			return false
+		}
+		return true
+	})
+	return text
 }
 
 func (s *fakeSource) fetchCount() int {

@@ -27,7 +27,7 @@ var _ hkdfguard.ProtectedReadOnlyCache = (*Source)(nil)
 // when that is empty, $CREDENTIALS_DIRECTORY's - and encryptedFiles, encrypted credential files by
 // credential name, absolute paths, which credentials decrypts (nil when there are none). It fails
 // with ErrInvalidArgument for a name that isn't one, a path that isn't absolute, or files without
-// credentials to decrypt them.
+// credentials to decrypt them, and for a credentialsDirectory that isn't absolute.
 func NewSource(credentials *Credentials, encryptedFiles map[string]string, credentialsDirectory string) (*Source, error) {
 	files := make(map[string]string, len(encryptedFiles))
 	for name, path := range encryptedFiles {
@@ -39,6 +39,11 @@ func NewSource(credentials *Credentials, encryptedFiles map[string]string, crede
 		}
 		files[name] = path
 	}
+	if credentialsDirectory != "" {
+		if err := checkCredentialsDirectory(credentialsDirectory); err != nil {
+			return nil, err
+		}
+	}
 	if len(files) > 0 && credentials == nil {
 		return nil, fmt.Errorf("%w: encrypted credential files need Credentials to decrypt them", ErrInvalidArgument)
 	}
@@ -46,7 +51,9 @@ func NewSource(credentials *Credentials, encryptedFiles map[string]string, crede
 }
 
 // Decrypt reads the credential name into result, returning how many bytes it wrote, or 0 when
-// there is no such credential. It fails with ErrResultTooSmall when result can't hold it.
+// there is no such credential. It fails with ErrResultTooSmall when result can't hold it, and with
+// ErrInvalidArgument when the credential, loaded or encrypted, isn't a regular file, or
+// $CREDENTIALS_DIRECTORY isn't an absolute path.
 func (s *Source) Decrypt(ctx context.Context, name string, result []byte) (int, error) {
 	credential, err := s.read(ctx, name)
 	if err != nil || credential == nil {
@@ -63,9 +70,9 @@ func (s *Source) Decrypt(ctx context.Context, name string, result []byte) (int, 
 // MaxDecryptedLength is the credential file's length: never less than its value's. ok is false
 // when there is no such credential, or it is empty.
 func (s *Source) MaxDecryptedLength(_ context.Context, name string) (int, bool, error) {
-	path := s.locate(name)
-	if path == "" {
-		return 0, false, nil
+	path, err := s.locate(name)
+	if err != nil || path == "" {
+		return 0, false, err
 	}
 	info, err := os.Stat(path)
 	if err != nil {
@@ -76,24 +83,33 @@ func (s *Source) MaxDecryptedLength(_ context.Context, name string) (int, bool, 
 }
 
 // locate is the file name's value comes from: the loaded credential if there is one, else its
-// encrypted file; empty when there is neither.
-func (s *Source) locate(name string) string {
+// encrypted file; empty when there is neither. Either one that is there but isn't a regular file
+// fails, rather than being passed over.
+func (s *Source) locate(name string) (string, error) {
 	if !IsValidName(name) {
-		return ""
+		return "", nil
 	}
-	if loaded, _ := loadedCredentialPath(name, s.credentialsDirectory); loaded != "" && isFile(loaded) {
-		return loaded
+	loaded, err := loadedCredentialPath(name, s.credentialsDirectory)
+	if err != nil {
+		return "", err
 	}
-	if encrypted, ok := s.encryptedFiles[name]; ok && isFile(encrypted) {
-		return encrypted
+	if loaded != "" {
+		if regular, err := regularFile(loaded); err != nil || regular {
+			return loaded, err
+		}
 	}
-	return ""
+	if encrypted, ok := s.encryptedFiles[name]; ok {
+		if regular, err := regularFile(encrypted); err != nil || regular {
+			return encrypted, err
+		}
+	}
+	return "", nil
 }
 
 func (s *Source) read(ctx context.Context, name string) (*Credential, error) {
-	path := s.locate(name)
-	if path == "" {
-		return nil, nil
+	path, err := s.locate(name)
+	if err != nil || path == "" {
+		return nil, err
 	}
 	if encrypted, ok := s.encryptedFiles[name]; !ok || encrypted != path {
 		return ReadLoadedCredential(name, s.credentialsDirectory)

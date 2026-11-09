@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -43,6 +44,12 @@ func helper(mode string, args []string) int {
 		_, _ = os.Stdout.Write(make([]byte, MaxLength+1))
 		time.Sleep(time.Minute)
 		return 0
+	case "env":
+		fmt.Fprint(os.Stderr, strings.Join(os.Environ(), "\n"))
+		return 0
+	case "flood-stderr":
+		_, _ = os.Stderr.Write(bytes.Repeat([]byte("e"), 64*1024))
+		return 4
 	case "close-and-hang":
 		_ = os.Stdout.Close()
 		time.Sleep(time.Minute)
@@ -59,8 +66,55 @@ func runHelper(t *testing.T, ctx context.Context, mode string, stdin []byte, tim
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv(helperVariable, mode)
-	return processRunner{}.run(ctx, executable, []string{"--name=item", "decrypt"}, stdin, timeout)
+	// The child inherits nothing, so the helper's own settings are handed to it explicitly.
+	extra := []string{helperVariable + "=" + mode}
+	for _, variable := range os.Environ() {
+		if strings.HasPrefix(variable, "HKDFGUARD_SYSTEMDCREDS_TEST_") && !strings.HasPrefix(variable, helperVariable+"=") {
+			extra = append(extra, variable)
+		}
+	}
+	return processRunner{extraEnv: extra}.run(ctx, executable, []string{"--name=item", "decrypt"}, stdin, timeout)
+}
+
+// systemd-creds is given the system PATH and nothing of this process's environment: a variable set
+// for the application - a secret, or one systemd-creds reads - never reaches it.
+func TestTheProcess_InheritsNoEnvironment(t *testing.T) {
+	t.Setenv("SYSTEMD_CREDENTIAL_SECRET", "/tmp/another-host-key")
+	t.Setenv("HKDFGUARD_UNRELATED_SECRET", "s3cret")
+
+	result, err := runHelper(t, context.Background(), "env", nil, 30*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer result.output.Close()
+	environment := strings.Split(result.stderr, "\n")
+	for _, leaked := range []string{"SYSTEMD_CREDENTIAL_SECRET=", "HKDFGUARD_UNRELATED_SECRET="} {
+		for _, variable := range environment {
+			if strings.HasPrefix(variable, leaked) {
+				t.Errorf("the child was given %s", variable)
+			}
+		}
+	}
+	if !slices.Contains(environment, childPath) {
+		t.Errorf("the child's environment %q lacks %s", environment, childPath)
+	}
+}
+
+// A process that floods its standard error leaves only maxStderr bytes of it in the error, marked
+// as cut off.
+func TestAFloodedStderr_IsCutToItsLimit_InTheError(t *testing.T) {
+	result, err := runHelper(t, context.Background(), "flood-stderr", nil, 30*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer result.output.Close()
+	if result.exitCode != 4 || result.stderr != strings.Repeat("e", maxStderr)+truncatedStderr {
+		t.Fatalf("exit %d, %d bytes of stderr", result.exitCode, len(result.stderr))
+	}
+	message := (&CommandError{Verb: "decrypt", ExitCode: 4, Stderr: result.stderr}).Error()
+	if len(message) > maxStderr+100 {
+		t.Fatalf("the error is %d bytes", len(message))
+	}
 }
 
 func TestTheProcess_GetsItsArgumentsAndStdin_AndItsStdoutIsTheValue(t *testing.T) {
@@ -133,7 +187,12 @@ func TestStderr_IsKeptUpToItsLimit(t *testing.T) {
 		t.Fatal(n)
 	}
 	_, _ = b.Write([]byte("def"))
-	if b.String() != "abcd" {
+	if b.String() != "abcd"+truncatedStderr {
 		t.Fatal(b.String())
+	}
+	exact := &limitedBuffer{limit: 3}
+	_, _ = exact.Write([]byte("abc"))
+	if exact.String() != "abc" {
+		t.Fatalf("%q: nothing was discarded", exact.String())
 	}
 }

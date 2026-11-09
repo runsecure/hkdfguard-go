@@ -639,3 +639,89 @@ func TestNew_ValidatesItsArguments(t *testing.T) {
 		t.Errorf("FolderPath = %q; want %q", c.FolderPath(), want)
 	}
 }
+
+// text is every record's message and attributes, as a text handler would write them.
+func (h *capturingHandler) text() string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	var b strings.Builder
+	for _, r := range h.records {
+		b.WriteString(r.Message)
+		r.Attrs(func(a slog.Attr) bool {
+			b.WriteString(" " + a.Key + "=" + a.Value.String())
+			return true
+		})
+		b.WriteString("\n")
+	}
+	return b.String()
+}
+
+func TestAFailedLoad_IsLoggedWithoutTheName_UnlessSensitiveLoggingIsOn(t *testing.T) {
+	if runningAsRoot() {
+		t.Skip("Running as root, whose files are trusted.")
+	}
+	for _, sensitive := range []bool{false, true} {
+		original := diagnostics.Cache.SensitiveLoggingEnabled()
+		diagnostics.Cache.SetSensitiveLogging(sensitive)
+		f := newFixture(t)
+		f.write("tenant-42-password", "value")
+		handler := &capturingHandler{}
+		// A trust its folder doesn't meet, so securefile refuses it with an error quoting the path.
+		c, err := New(f.folder, securefile.AdministratorsOnly(), f.ring, f.format, Options{Logger: slog.New(handler)})
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		_, err = c.Decrypt(t.Context(), "tenant-42-password", make([]byte, 16))
+		diagnostics.Cache.SetSensitiveLogging(original)
+		if !errors.Is(err, securefile.ErrUntrusted) || !strings.Contains(err.Error(), "tenant-42-password") {
+			t.Fatalf("got %v; the caller's error should still name the file", err)
+		}
+		logged := handler.text()
+		if !strings.Contains(logged, "level=ERROR") && !strings.Contains(logged, "failed") {
+			t.Fatalf("sensitive=%v: no failure logged:\n%s", sensitive, logged)
+		}
+		if strings.Contains(logged, "tenant-42-password") != sensitive {
+			t.Errorf("sensitive=%v: logged\n%s", sensitive, logged)
+		}
+	}
+}
+
+func TestIsValidName_RefusesNamesWindowsWouldOpenAsAnotherFileOrADevice(t *testing.T) {
+	for name, want := range map[string]bool{
+		"item.":    false, // Windows drops a trailing '.', so this is the file "item"
+		"item..":   false,
+		"a.b.":     false,
+		"nul":      false,
+		"NUL":      false,
+		"Nul.txt":  false, // a device on Windows 10 and Server, extension or not
+		"con":      false,
+		"prn.json": false,
+		"aux":      false,
+		"com1":     false,
+		"COM9.cfg": false,
+		"lpt0":     false,
+		"LPT7":     false,
+		"item.v2":  true,
+		"nullable": true, // a longer stem is an ordinary name
+		"console":  true,
+		"com":      true,
+		"com10":    true,
+		"lpt1x":    true,
+		"my.nul":   true, // only the stem counts
+		"a.con":    true,
+	} {
+		if got := IsValidName(name); got != want {
+			t.Errorf("IsValidName(%q) = %v; want %v", name, got, want)
+		}
+	}
+}
+
+func TestANameEndingInADot_IsMissing_EvenWhereWindowsWouldOpenItsNamesake(t *testing.T) {
+	f := newFixture(t)
+	f.write("item", "value")
+	c := f.newCache()
+
+	requireMissing(t, c, "item.")
+	mustGet(t, c, "item", "value")
+}
