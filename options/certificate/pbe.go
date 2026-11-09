@@ -372,7 +372,9 @@ func decryptPBE(algorithm pkix.AlgorithmIdentifier, password, ciphertext []byte,
 			key = expanded
 		}
 		iv = pkcs12KDF(sha1.New, bmp, params.Salt, params.Iterations, pkcs12IVID, des.BlockSize)
-		if block, err = des.NewTripleDESCipher(key); err != nil {
+		// Decrypt-only: 3DES is the cipher PKCS#12 defines here, and existing .p12/.pfx files
+		// (older Windows and OpenSSL -legacy exports) use it. Nothing is ever encrypted with it.
+		if block, err = des.NewTripleDESCipher(key); err != nil { // NOSONAR go:S5547 - decrypting an existing file in its standard format
 			return nil, fmt.Errorf("%w: %v", ErrInvalidFile, err)
 		}
 
@@ -391,7 +393,9 @@ func decryptPBE(algorithm pkix.AlgorithmIdentifier, password, ciphertext []byte,
 		return nil, fmt.Errorf("%w: the encrypted data isn't whole cipher blocks", ErrInvalidFile)
 	}
 	plaintext := make([]byte, len(ciphertext))
-	cipher.NewCBCDecrypter(block, iv).CryptBlocks(plaintext, ciphertext)
+	// Decrypt-only: PBES2 and PKCS#12 PBE define CBC with PKCS#7 padding, so reading these files
+	// requires it. The input is a local file, so there is no padding oracle to query.
+	cipher.NewCBCDecrypter(block, iv).CryptBlocks(plaintext, ciphertext) // NOSONAR go:S5542 - decrypting an existing file in its standard format
 
 	// PKCS#7 padding, checked whole.
 	padding := int(plaintext[len(plaintext)-1])
